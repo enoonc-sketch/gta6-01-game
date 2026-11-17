@@ -1,79 +1,143 @@
-// The screenshot scenes behind ?shot=start|play|end. Each one plays the real rules forward from a
-// fresh world for a fixed number of steps, steered by a simple autopilot (look ahead each way the
-// paddle could move, keep clear of blocks, chase the lowest coin when that is safe), so the frame
-// is what a short game really looks like and the same seed always gives the same frame.
-import { FIELD, PLAYER, STEP } from './config.js';
-import { EVENT_OVER, KIND_BLOCK } from './world.js';
-import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+// shots.js — deterministic screenshot scenes for ?shot=.
+// Each scene sets the game up at a fixed, seeded moment — the same URL
+// always shows the same frame — so the screenshots are real renders of
+// the game, taken by its own code, and reproducible by anyone.
 
-const START_SECONDS = 5;
-const PLAY_SECONDS = 26;
-const END_LIMIT_SECONDS = 600;
-/**
- * How far ahead, in seconds, the autopilot checks each way it could move: the play scene's pilot
- * looks well ahead and keeps all its lives; the end scene's looks only a moment ahead, so it is
- * caught out once the blocks speed up, as a hurried player is.
- */
-const HORIZON_PLAY = 0.7;
-const HORIZON_END = 0.25;
-const SAMPLE = 1 / 30;
-const DIRECTIONS = [0, -1, 1];
-/** Extra room, each side, it keeps between the paddle and a block. */
-const MARGIN = 10;
+import { CITY } from './config.js';
+import { makePoliceCar, makeViper } from './entities.js';
+import { addHeat } from './police.js';
 
-/** Seconds until moving in `direction` (-1, 0, 1) runs the paddle into a block; Infinity when it never does. */
-function timeToHit(state, direction, horizon) {
-  const player = state.player;
-  for (let t = SAMPLE; t <= horizon; t += SAMPLE) {
-    const x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * t));
-    for (let index = 0; index < state.items.length; index += 1) {
-      const item = state.items[index];
-      if (!item.active || item.kind !== KIND_BLOCK) continue;
-      const y = item.y + item.speed * t;
-      if (y + item.height > player.y && y < player.y + player.height && item.x < x + player.width + MARGIN && item.x + item.width > x - MARGIN) return t;
-    }
+export const SHOTS = ['start', 'chase', 'drive', 'fight'];
+
+/** Put the player in a car on a road, driving, with the engine on. */
+function putPlayerInCar(game, x, y, angle, speed) {
+  const p = game.player;
+  // Find the closest car and hand it to the player; if none is near,
+  // take the first traffic car on the street.
+  let car = null;
+  let best = null;
+  let bestD = Infinity;
+  for (const c of game.cars) {
+    if (c.dead || c.police) continue;
+    const d = Math.hypot(c.x - x, c.y - y);
+    if (d < bestD) { bestD = d; best = c; }
   }
-  return Infinity;
+  car = best;
+  // Sit in the right-hand lane for the heading, like the traffic does.
+  car.x = x - Math.sin(angle) * 16;
+  car.y = y + Math.cos(angle) * 16;
+  car.angle = angle;
+  car.speed = speed;
+  car.driver = 'player';
+  car.parked = false;
+  p.inCar = car;
+  p.x = x;
+  p.y = y;
+  p.angle = angle;
+  game.autoDrive = true; // keep the throttle down while the shot is staged
+  game.camera.x = x;
+  game.camera.y = y;
 }
 
-/** Of the safe ways to move, the one toward the lowest coin (or the centre); else the one that is hit last. */
-function autopilot(state, horizon) {
-  const player = state.player;
-  let coin = null;
-  for (let index = 0; index < state.items.length; index += 1) {
-    const item = state.items[index];
-    if (item.active && item.kind !== KIND_BLOCK && (coin === null || item.y > coin.y)) coin = item;
+function putPoliceBehind(game, car, count, gap) {
+  for (let i = 0; i < count; i++) {
+    const bx = car.x - Math.cos(car.angle) * gap * (i + 1) - Math.sin(car.angle) * (i % 2 ? 26 : -26);
+    const by = car.y - Math.sin(car.angle) * gap * (i + 1) + Math.cos(car.angle) * (i % 2 ? 26 : -26);
+    const cop = makePoliceCar(bx, by, car.angle);
+    cop.speed = car.speed * 0.92;
+    game.cars.push(cop);
   }
-  const target = coin === null ? FIELD.width / 2 : coin.x + coin.width / 2;
-  const centre = player.x + player.width / 2;
-  const wanted = target > centre + 8 ? 1 : target < centre - 8 ? -1 : 0;
-  let best = wanted;
-  let bestTime = timeToHit(state, wanted, horizon);
-  for (let index = 0; index < DIRECTIONS.length && bestTime !== Infinity; index += 1) {
-    const time = timeToHit(state, DIRECTIONS[index], horizon);
-    if (time > bestTime) {
-      bestTime = time;
-      best = DIRECTIONS[index];
-    }
-  }
-  return best;
 }
 
-/**
- * Set `world` to the named scene (start, play or end; any other name is start) and return the
- * screen to draw over it and the best score to show.
- */
-export function stageShot(name, world) {
-  world.reset();
-  if (name !== 'play' && name !== 'end') {
-    for (let index = 0; index < START_SECONDS / STEP; index += 1) world.step(STEP, 0, true);
-    return { screen: SCREEN_TITLE, best: 0 };
+/** Build one named scene. Call before the game starts its loop. */
+export function applyShot(game, name) {
+  const L = game.city.landmarks;
+  if (name === 'start') {
+    // The title screen over the living city: nothing else to set up.
+    game.state = 'menu';
+    return;
   }
-  const limit = name === 'end' ? END_LIMIT_SECONDS : PLAY_SECONDS;
-  const horizon = name === 'end' ? HORIZON_END : HORIZON_PLAY;
-  for (let index = 0; index < limit / STEP; index += 1) {
-    if (world.step(STEP, autopilot(world.state, horizon), false) & EVENT_OVER) break;
+
+  game.state = 'playing';
+  game.audio.ensure();
+
+  if (name === 'chase') {
+    // A three-star chase down the beachfront avenue: the player fleeing in
+    // a stolen Comet GT, three interceptors behind, the minimap, the stars
+    // and the delivery objective all on the HUD at once.
+    game.missions.startMission(2);
+    game.missions.stage = 1;
+    game.missions.refreshObjective();
+    putPlayerInCar(game, 1200, 2400, 0, 430);
+    addHeat(game, 520, 'the setup');
+    putPoliceBehind(game, game.player.inCar, 3, 110);
+    game.addToast('Package secured. The docks are hot — move!', '#e03a2f');
+  } else if (name === 'drive') {
+    // Cruising the beachfront avenue in the evening light, traffic around,
+    // the garage job on the HUD.
+    game.missions.startMission(1);
+    game.missions.stage = 1;
+    game.missions.refreshObjective();
+    putPlayerInCar(game, 900, 2400, 0, 380);
+    game.player.inCar.maxSpeed = 380; // a relaxed cruise for the shot
+    // A few cars ahead in the same lane, far enough not to be caught, and
+    // oncoming traffic in the other lane so the avenue reads as alive.
+    const movers = game.cars.filter((c) => c.driver === 'traffic' && !c.parked);
+    movers.slice(0, 2).forEach((c, i) => {
+      c.axis = 'h';
+      c.line = 2400;
+      c.along = 2000 + i * 300;
+      c.dir = 1;
+      c.lane = 1;
+      c.x = c.along;
+      c.y = 2400 + 16;
+      c.angle = 0;
+      c.speed = 170;
+    });
+    movers.slice(2, 7).forEach((c, i) => {
+      c.axis = 'h';
+      c.line = 2400;
+      c.along = 1150 + i * 260;
+      c.dir = -1;
+      c.lane = -1;
+      c.x = c.along;
+      c.y = 2400 - 16;
+      c.angle = Math.PI;
+      c.speed = 200;
+    });
+  } else if (name === 'fight') {
+    // The Foundry Yard showdown: Jax on foot, pistol out, three Vipers
+    // closing in, two stars overhead.
+    game.missions.startMission(5);
+    game.missions.stage = 1;
+    const p = game.player;
+    p.x = L.foundry.x + 60;
+    p.y = L.foundry.y + 150;
+    p.angle = Math.PI / 4;
+    p.hasPistol = true;
+    p.ammo = 72;
+    p.health = 78;
+    game.camera.x = p.x;
+    game.camera.y = p.y;
+    game.vipers.length = 0;
+    const spots = [
+      [L.foundry.x + 200, L.foundry.y + 60],
+      [L.foundry.x - 40, L.foundry.y + 260],
+      [L.foundry.x + 260, L.foundry.y + 260],
+    ];
+    for (const [x, y] of spots) {
+      const v = makeViper(x, y, game.rng);
+      v.state = 'attack';
+      v.shootCooldown = 0.4;
+      game.vipers.push(v);
+    }
+    addHeat(game, 300, 'the foundry fight');
+    game.missions.refreshObjective();
   }
-  const over = world.state.lives === 0;
-  return { screen: over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };
+}
+
+/** Fixed-step pre-roll: run the scene forward so the shot catches it mid-action. */
+export function preroll(game, name) {
+  const steps = name === 'chase' ? 50 : name === 'fight' ? 36 : name === 'drive' ? 40 : 0;
+  for (let i = 0; i < steps; i++) game.update(1 / 60);
 }
