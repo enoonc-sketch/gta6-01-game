@@ -1,9 +1,9 @@
-// entities.js — factories for everything that moves in Solmar City:
-// the player, traffic cars, pedestrians, police and gang members.
-// No behaviour lives here; the update files drive these plain objects.
+// Entity factories and shared physics: the player, cars, pedestrians, police
+// and pickups, plus the arcade car model and circle-versus-city collision.
 
-import { CAR, CAR_MODELS, PED_SHIRTS, PLAYER } from './config.js';
-import { randomRoadPoint } from './city.js';
+import { PLAYER, CAR, PEDS, CAR_MODELS, PED_COLORS } from './config.js';
+import { clamp, pushCircleOutOfBox, dist2 } from './rng.js';
+import { WATER_Y } from './city.js';
 
 let nextId = 1;
 
@@ -11,155 +11,176 @@ export function makePlayer(x, y) {
   return {
     id: nextId++,
     kind: 'player',
-    x, y,
+    x, y, vx: 0, vy: 0,
     angle: -Math.PI / 2,
-    speed: 0,
-    health: PLAYER.health,
-    maxHealth: PLAYER.health,
-    inCar: null, // the car object when driving
-    hasPistol: false,
-    ammo: 0,
-    pistolCooldown: 0,
-    punchCooldown: 0,
-    regenDelay: 0,
-    wanted: 0,
-    cash: 0,
-    moving: false,
+    aimAngle: -Math.PI / 2,
+    radius: PLAYER.radius,
+    hp: PLAYER.maxHp,
+    armor: 0,
+    money: 120,
+    color: '#e74c3c', // Rhea's rust-red jacket
+    skin: '#c68642',
+    inCar: null,
+    weapons: { fists: true, pistol: false, smg: false, scatter: false },
+    ammo: { pistol: 0, smg: 0, scatter: 0 },
+    currentWeapon: 'fists',
+    fireCooldown: 0,
+    punchAnim: 0,
+    walkPhase: 0,
+    dead: false,
   };
 }
 
-/** A traffic car that follows the road graph. */
-export function makeTrafficCar(rng, city) {
-  const model = rng.pick(CAR_MODELS);
-  const vertical = rng.chance(0.5);
-  const line = rng.pick(city.roadLines);
-  const along = rng.range(60, 2340);
-  const dir = rng.chance(0.5) ? 1 : -1;
+export function makeCar(x, y, angle, rng, opts = {}) {
+  const model = opts.model || rng.pick(CAR_MODELS);
   return {
     id: nextId++,
     kind: 'car',
-    model: model.name,
-    color: model.color,
-    maxSpeed: model.maxSpeed * rng.range(0.55, 0.7),
-    // Road-graph state: which road, which way along it, which lane side.
-    axis: vertical ? 'v' : 'h',
-    line,
-    along,
-    dir,
-    lane: rng.chance(0.5) ? 1 : -1,
-    speed: CAR.trafficSpeed * rng.range(0.8, 1.15),
-    driver: 'traffic',
-    health: CAR.health,
-    x: vertical ? line : along,
-    y: vertical ? along : line,
-    angle: vertical ? (dir > 0 ? Math.PI / 2 : -Math.PI / 2) : (dir > 0 ? 0 : Math.PI),
-    stopped: false,
-    honkCooldown: 0,
-  };
-}
-
-/** A parked car the player can steal. */
-export function makeParkedCar(rng, city) {
-  const model = rng.pick(CAR_MODELS);
-  const spot = randomRoadPoint(rng, city);
-  const vertical = rng.chance(0.5);
-  const offset = 22; // parked at the kerb
-  return {
-    id: nextId++,
-    kind: 'car',
-    model: model.name,
-    color: model.color,
-    maxSpeed: model.maxSpeed,
-    axis: vertical ? 'v' : 'h',
-    line: vertical ? spot.x : spot.y,
-    along: vertical ? spot.y : spot.x,
-    dir: rng.chance(0.5) ? 1 : -1,
-    lane: 1,
-    speed: 0,
-    driver: null, // parked, nobody inside
-    health: CAR.health,
-    x: vertical ? spot.x + offset : spot.x,
-    y: vertical ? spot.y : spot.y + offset,
-    angle: vertical ? (Math.PI / 2) : 0,
-    parked: true,
-    stopped: false,
-    honkCooldown: 0,
-  };
-}
-
-/** A police pursuit car, spawned near the player. */
-export function makePoliceCar(x, y, angle) {
-  return {
-    id: nextId++,
-    kind: 'car',
-    model: 'Interceptor',
-    color: '#1c2733',
-    maxSpeed: 640,
-    axis: 'v',
-    line: x,
-    along: y,
-    dir: 1,
-    lane: 0,
-    speed: 0,
-    driver: 'police',
-    health: CAR.health,
     x, y, angle,
-    police: true,
-    sirenPhase: 0,
-    stopped: false,
-    honkCooldown: 0,
-  };
-}
-
-/** A police officer on foot. */
-export function makeFootCop(x, y) {
-  return {
-    id: nextId++,
-    kind: 'cop',
-    x, y,
-    angle: 0,
+    vx: 0, vy: 0,
     speed: 0,
-    health: 100,
-    state: 'chase',
-    holdTimer: 0, // seconds spent within busting range of the player
+    steerVis: 0,
+    radius: 21,
+    length: CAR.length,
+    width: CAR.width,
+    hp: opts.hp ?? 100,
+    color: opts.color || model.color,
+    name: model.name,
+    speedMul: model.speedMul,
+    driver: opts.driver || null,       // null (parked) | 'traffic' | 'player' | 'police'
+    police: !!opts.police,
+    ai: opts.ai || null,                // traffic/police driving state
+    smokeTimer: 0,
+    burning: false,
+    dead: false,
+    honkTimer: rng.range(4, 20),
   };
 }
 
-/** A pedestrian strolling the sidewalks. */
-export function makePed(rng, city) {
-  const spot = randomRoadPoint(rng, city);
-  const vertical = rng.chance(0.5);
+export function makePed(x, y, rng, opts = {}) {
   return {
     id: nextId++,
-    kind: 'ped',
-    x: spot.x,
-    y: spot.y,
-    axis: vertical ? 'v' : 'h',
-    line: vertical ? spot.x : spot.y,
-    along: vertical ? spot.y : spot.x,
-    dir: rng.chance(0.5) ? 1 : -1,
-    speed: rng.range(28, 55),
-    color: rng.pick(PED_SHIRTS),
-    state: 'walk', // 'walk' | 'flee' | 'down'
-    fleeX: 0,
-    fleeY: 0,
-    panic: 0,
-    angle: 0,
+    kind: opts.cop ? 'cop' : 'ped',
+    x, y, vx: 0, vy: 0,
+    angle: rng.range(0, Math.PI * 2),
+    radius: PEDS.radius,
+    hp: opts.hp ?? 40,
+    color: opts.cop ? '#274472' : rng.pick(PED_COLORS),
+    skin: rng.pick(['#f1c27d', '#e0ac69', '#c68642', '#8d5524', '#ffdbac']),
+    state: 'walk',
+    walkPhase: rng.range(0, 6.28),
+    target: null,
+    fleeFrom: null,
+    fleeTimer: 0,
+    shootCooldown: rng.range(0.4, 1.2),
+    hostile: !!opts.hostile,
+    dead: false,
+    downTimer: 0,
   };
 }
 
-/** A Viper gang member: an armed enemy for the final mission. */
-export function makeViper(x, y, rng) {
-  return {
-    id: nextId++,
-    kind: 'viper',
-    x, y,
-    angle: rng ? rng.angle() : 0,
-    speed: 0,
-    health: 60,
-    state: 'guard', // 'guard' | 'attack' | 'down'
-    shootCooldown: rng ? rng.range(0.5, 1.5) : 1,
-    color: '#3a3f2f',
-    shirt: '#5a2f3a',
-  };
+export function makePickup(x, y, type, amount = 0) {
+  return { id: nextId++, kind: 'pickup', x, y, type, amount, bobPhase: Math.random() * 6.28, taken: false };
+}
+
+// Arcade car physics: velocity split into forward/lateral parts, lateral grip
+// bleeds sideways slide; the handbrake drops grip so the car drifts.
+// input: { throttle: -1..1, steer: -1..1, brake: bool, handbrake: bool }
+export function stepCarPhysics(car, input, dt) {
+  const fx = Math.cos(car.angle);
+  const fy = Math.sin(car.angle);
+  const rx = -fy;
+  const ry = fx;
+  let fwd = car.vx * fx + car.vy * fy;
+  let lat = car.vx * rx + car.vy * ry;
+
+  const maxFwd = CAR.maxSpeed * car.speedMul;
+  if (input.throttle > 0) fwd += CAR.accel * input.throttle * dt * (fwd < 0 ? 2.2 : 1);
+  else if (input.throttle < 0) fwd += (fwd > 8 ? -CAR.brake : -CAR.accel * 0.55) * -input.throttle * dt;
+  if (input.brake) fwd -= Math.sign(fwd) * Math.min(Math.abs(fwd), CAR.brake * dt);
+  if (input.handbrake) fwd -= Math.sign(fwd) * Math.min(Math.abs(fwd), 260 * dt);
+  fwd = clamp(fwd, -CAR.reverseSpeed, maxFwd);
+  fwd *= Math.exp(-CAR.drag * dt * (input.throttle === 0 ? 1.6 : 0.5));
+
+  const grip = input.handbrake ? CAR.driftGrip : CAR.grip;
+  lat *= Math.exp(-grip * dt);
+
+  const steerAuthority = clamp(Math.abs(fwd) / 90, 0, 1) * (input.handbrake ? 1.35 : 1);
+  car.angle += input.steer * CAR.steerRate * steerAuthority * dt * (fwd < 0 ? -1 : 1);
+  car.steerVis = input.steer;
+
+  const nfx = Math.cos(car.angle);
+  const nfy = Math.sin(car.angle);
+  const nrx = -nfy;
+  const nry = nfx;
+  car.vx = nfx * fwd + nrx * lat;
+  car.vy = nfy * fwd + nry * lat;
+  car.speed = fwd;
+  car.x += car.vx * dt;
+  car.y += car.vy * dt;
+}
+
+// Resolve a circle against building boxes and solid props. Returns impact speed (0 = no hit).
+export function collideWithCity(e, radius, solids, props) {
+  let impact = 0;
+  const speedBefore = Math.hypot(e.vx || 0, e.vy || 0);
+  for (const box of solids) {
+    if (e.x < box.x - 70 || e.x > box.x + box.w + 70 || e.y < box.y - 70 || e.y > box.y + box.h + 70) continue;
+    const [nx, ny, hit] = pushCircleOutOfBox(e.x, e.y, radius, box);
+    if (hit) {
+      e.x = nx;
+      e.y = ny;
+      impact = Math.max(impact, speedBefore);
+    }
+  }
+  for (const p of props) {
+    if (!p.solid) continue;
+    const rr = radius + p.r;
+    if (dist2(e.x, e.y, p.x, p.y) < rr * rr) {
+      const d = Math.max(1, Math.hypot(e.x - p.x, e.y - p.y));
+      e.x = p.x + ((e.x - p.x) / d) * rr;
+      e.y = p.y + ((e.y - p.y) / d) * rr;
+      impact = Math.max(impact, speedBefore * 0.6);
+    }
+  }
+  // World bounds and the bay to the south.
+  e.x = clamp(e.x, 24, 4800 - 24);
+  e.y = clamp(e.y, 24, WATER_Y - 6);
+  return impact;
+}
+
+// Two-circle collision for cars so long vehicles scrape corners believably.
+export function collideCar(car, solids, props) {
+  const fx = Math.cos(car.angle);
+  const fy = Math.sin(car.angle);
+  let impact = 0;
+  for (const off of [-15, 15]) {
+    const probe = { x: car.x + fx * off, y: car.y + fy * off, vx: car.vx, vy: car.vy };
+    const hit = collideWithCity(probe, 15, solids, props);
+    if (hit > 0) {
+      car.x += probe.x - (car.x + fx * off);
+      car.y += probe.y - (car.y + fy * off);
+      impact = Math.max(impact, hit);
+    }
+  }
+  if (impact > 30) {
+    // Kill the velocity component pushing into the wall, keep the slide.
+    car.vx *= 0.35;
+    car.vy *= 0.35;
+  }
+  return impact;
+}
+
+export function damageCar(car, amount) {
+  if (car.dead) return;
+  car.hp -= amount;
+  if (car.hp <= 0) {
+    car.hp = 0;
+    car.dead = true;
+    car.burning = true;
+  }
+}
+
+export function carSpeed(car) {
+  return Math.hypot(car.vx, car.vy);
 }

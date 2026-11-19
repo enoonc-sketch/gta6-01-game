@@ -1,271 +1,365 @@
-// missions.js — "The Solmar Job": six story missions from Sal Vega, the
-// fixer at The Rusty Anchor. Each mission is a small state machine with a
-// marker on the map, an objective line on the HUD, and a cash reward.
+// Story missions and courier side jobs. Rhea Calloway owes Old Tomas money;
+// six jobs across Cinder Bay settle the debt. Each mission is a chain of
+// stages (go to, pick up, deliver, race, shootout, tail, steal) driven by
+// updateMissions, which also maintains the HUD objective and map marker.
 
-import { addHeat, clearWanted } from './police.js';
-import { makeViper } from './entities.js';
+import { clamp, dist, angleDiff } from './rng.js';
+import { laneTarget, nearestIntersection, randomRoadPoint } from './city.js';
+import { makeCar, makePed, makePickup, stepCarPhysics, collideCar } from './entities.js';
+import { addHeat, clearWanted, wantedStars } from './police.js';
 
-export const MISSIONS = [
+const PIER = { x: 12 * 320 + 73, y: 4800 - 130 };
+const BANK = { x: 7 * 320 + 160, y: 6 * 320 + 160 };
+
+export const STORY = [
   {
-    id: 'meet-sal',
-    title: 'Meet Sal',
+    title: 'Welcome Back, Rhea',
     reward: 150,
-    briefing: "Sal Vega wants a word. He runs jobs out of The Rusty Anchor bar. Go and hear him out — on foot, in a car, your call.",
+    brief: [
+      'Old Tomas: "Rhea. Thought the bay had swallowed you."',
+      '"You owe me, kid. Run a package from Pier 9 to my diner and we start even-ing up."',
+    ],
+    stages: [
+      { type: 'goto', place: 'diner', text: 'Meet Old Tomas at the Salt & Smoke Diner' },
+      { type: 'pickup', at: PIER, text: 'Pick up the package at Pier 9' },
+      { type: 'deliver', place: 'diner', text: 'Bring the package back to the diner' },
+    ],
   },
   {
-    id: 'borrowed-wheels',
-    title: 'Borrowed Wheels',
+    title: 'Hot Delivery',
     reward: 300,
-    briefing: 'Sal needs a clean car. Take any car on the street — press E next to one — and bring it to the Color Rush Garage.',
+    brief: [
+      'Tomas: "This one is warm. Warehouse to the Old Market, fast."',
+      '"And Rhea — if the law shows up, do not stop."',
+    ],
+    stages: [
+      { type: 'pickup', place: 'warehouse', text: 'Collect the crate at Pier 9 Warehouse' },
+      { type: 'deliver', at: { x: 3 * 320 + 160, y: 5 * 320 + 160 }, timer: 105, heatOnStart: 40, text: 'Deliver to the Old Market — do not stop!' },
+    ],
   },
   {
-    id: 'the-pickup',
-    title: 'The Pickup',
+    title: 'Street Rules',
+    reward: 450,
+    brief: [
+      'Tomas: "Vex runs the night races and owes me a favour. Beat him and it is mine."',
+      '"Eight checkpoints. First one home wins."',
+    ],
+    stages: [
+      { type: 'race', text: 'Beat Vex through every checkpoint' },
+    ],
+  },
+  {
+    title: 'Warehouse Trouble',
     reward: 600,
-    briefing: 'A package is waiting at the Harbor Docks. Grab it, then bring it back to Sal. The docks are watched — expect company.',
+    brief: [
+      'Tomas: "Some dock rats moved into Pier 9 and took my cash case."',
+      '"Clear them out, grab the case, bring it home. There is hardware waiting for you there."',
+    ],
+    stages: [
+      { type: 'goto', place: 'warehouse', text: 'Head to Pier 9 Warehouse' },
+      { type: 'shootout', place: 'warehouse', count: 5, text: 'Clear out the dock rats' },
+      { type: 'pickup', place: 'warehouse', text: 'Grab the cash case' },
+      { type: 'deliver', place: 'diner', text: 'Bring the cash case to Tomas' },
+    ],
   },
   {
-    id: 'hot-pursuit',
-    title: 'Hot Pursuit',
-    reward: 800,
-    briefing: "Somebody talked. The Solmar PD has your name and your plate. Survive three stars for a minute, then shake them off.",
+    title: 'Tail the Courier',
+    reward: 500,
+    brief: [
+      'Tomas: "A courier runs cash for the Harbor crew every dusk."',
+      '"Follow him. Not too close, not too far. I want to know where he sleeps."',
+    ],
+    stages: [
+      { type: 'tail', seconds: 45, text: 'Tail the courier — stay in the sweet spot' },
+    ],
   },
   {
-    id: 'night-drop',
-    title: 'The Night Drop',
-    reward: 1200,
-    briefing: 'Pick up the cash at Vera Tower and run it to the Palma Beach Hut. Two stars, a 150-second clock, no excuses.',
-  },
-  {
-    id: 'payback',
-    title: 'Payback at the Foundry',
-    reward: 2000,
-    briefing: "Dario Kane's Vipers set you up. They are holed up at the Foundry Yard. End it — all five of them — and Solmar is yours.",
+    title: 'The Big Score',
+    reward: 1500,
+    brief: [
+      'Tomas: "Last one. The bank moves its cash in a grey van at noon."',
+      '"Take the van, shake the law, and park it at Milo\'s. Then we are square."',
+    ],
+    stages: [
+      { type: 'steal', at: BANK, text: 'Steal the grey cash van by the bank' },
+      { type: 'evade', text: 'Lose the police' },
+      { type: 'deliver', place: 'respray', text: "Park the van at Milo's Respray" },
+    ],
   },
 ];
 
-export class MissionManager {
-  constructor(game) {
-    this.game = game;
-    this.index = game.save.missionIndex || 0;
-    this.stage = 0;
-    this.timer = 0;
-    this.active = false;
-    this.done = game.save.storyComplete === true;
-    this.objective = '';
-    this.marker = null;
-    this.completedCount = game.save.missionsDone.length;
-  }
+const RACE_CHECKPOINTS = [
+  { x: 7 * 320, y: 7 * 320 }, { x: 10 * 320, y: 7 * 320 }, { x: 12 * 320, y: 9 * 320 },
+  { x: 12 * 320, y: 12 * 320 }, { x: 9 * 320, y: 13 * 320 }, { x: 6 * 320, y: 12 * 320 },
+  { x: 5 * 320, y: 9 * 320 }, { x: 7 * 320, y: 7 * 320 },
+];
 
-  get current() {
-    return MISSIONS[this.index] || null;
+function stagePoint(game, stage) {
+  if (stage.at) return stage.at;
+  if (stage.place) {
+    const p = game.city.places[stage.place];
+    return { x: p.x, y: p.y };
   }
+  return null;
+}
 
-  startMission(index) {
-    const game = this.game;
-    this.index = index;
-    this.stage = 0;
-    this.timer = 0;
-    this.active = true;
-    const m = MISSIONS[index];
-    game.addToast(`New mission: ${m.title}`, '#ffb02e');
-    game.audio.fanfare();
-    if (index === 3) {
-      this.timer = 60;
-      addHeat(game, 520, 'the setup');
+function playerPos(game) {
+  const p = game.player;
+  return p.inCar ? { x: p.inCar.x, y: p.inCar.y } : { x: p.x, y: p.y };
+}
+
+// Drive a car along the road grid toward a target intersection (used by the
+// race rival and the courier Rhea tails).
+function driveToward(car, game, dt, targetI, targetJ, cruise) {
+  const ai = car.ai || (car.ai = { fromI: 0, fromJ: 0, toI: 0, toJ: 0, cruise });
+  const here = nearestIntersection(car.x, car.y);
+  const target = laneTarget(ai.fromI, ai.fromJ, ai.toI, ai.toJ);
+  if (dist(car.x, car.y, target.x, target.y) < 46 || (ai.fromI === ai.toI && ai.fromJ === ai.toJ)) {
+    ai.fromI = here.i;
+    ai.fromJ = here.j;
+    const di = Math.sign(targetI - here.i);
+    const dj = Math.sign(targetJ - here.j);
+    if (di !== 0 && (dj === 0 || game.rng.chance(0.5))) { ai.toI = here.i + di; ai.toJ = here.j; }
+    else if (dj !== 0) { ai.toI = here.i; ai.toJ = here.j + dj; }
+    else { ai.toI = here.i; ai.toJ = here.j; }
+  }
+  const t2 = laneTarget(ai.fromI, ai.fromJ, ai.toI, ai.toJ);
+  const desired = Math.atan2(t2.y - car.y, t2.x - car.x);
+  const diff = angleDiff(car.angle, desired);
+  stepCarPhysics(car, {
+    throttle: clamp((cruise - car.speed) / 60, 0, 1),
+    steer: clamp(diff * 2.6, -1, 1),
+    brake: false,
+    handbrake: Math.abs(diff) > 2.4 && Math.abs(car.speed) > 150,
+  }, dt);
+  collideCar(car, game.city.solids, game.city.props);
+}
+
+export function startMission(game) {
+  const story = game.story;
+  if (story.index >= STORY.length) return false;
+  story.active = true;
+  story.stage = 0;
+  story.data = {};
+  story.timer = 0;
+  game.banner = { title: STORY[story.index].title, lines: STORY[story.index].brief, t: 0 };
+  setupStage(game);
+  return true;
+}
+
+function setupStage(game) {
+  const story = game.story;
+  const stage = STORY[story.index].stages[story.stage];
+  story.timer = stage.timer || 0;
+  if (stage.heatOnStart) addHeat(game, stage.heatOnStart);
+  if (stage.type === 'shootout') {
+    const p = stagePoint(game, stage);
+    story.data.hostiles = [];
+    for (let i = 0; i < stage.count; i++) {
+      const h = makePed(p.x + game.rng.range(-90, 90), p.y + game.rng.range(-60, 60), game.rng, { hostile: true, hp: 60 });
+      h.color = '#922b21';
+      game.peds.push(h);
+      story.data.hostiles.push(h);
     }
-    this.refreshObjective();
+    game.pickups.push(makePickup(p.x + 40, p.y + 30, 'smg', 120));
+    game.pickups.push(makePickup(p.x - 50, p.y + 40, 'armor', 0));
   }
+  if (stage.type === 'race') {
+    const start = RACE_CHECKPOINTS[0];
+    const rival = makeCar(start.x + 30, start.y + 40, 0, game.rng, { driver: 'rival', color: '#f39c12', hp: 160 });
+    rival.name = 'Vex\'s Comet';
+    rival.ai = { fromI: 7, fromJ: 7, toI: 8, toJ: 7, cruise: 330 };
+    game.cars.push(rival);
+    story.data.rival = rival;
+    story.data.rivalCp = 0;
+    story.data.playerCp = 0;
+  }
+  if (stage.type === 'tail') {
+    const start = { x: 3 * 320 + 19, y: 6 * 320 };
+    const courier = makeCar(start.x, start.y, Math.PI / 2, game.rng, { driver: 'courier', color: '#5d6d7e', hp: 120 });
+    courier.name = 'Courier Sedan';
+    courier.ai = { fromI: 3, fromJ: 6, toI: 3, toJ: 7, cruise: 175 };
+    game.cars.push(courier);
+    story.data.courier = courier;
+    story.data.tailTime = 0;
+    story.data.lostTimer = 0;
+  }
+  if (stage.type === 'steal') {
+    const van = makeCar(stage.at.x + 30, stage.at.y + 60, 0, game.rng, { driver: null, color: '#808b96', hp: 220 });
+    van.name = 'Cash Van';
+    van.length = 62;
+    game.cars.push(van);
+    story.data.van = van;
+  }
+}
 
-  /** Recompute the objective line and map marker for the current stage. */
-  refreshObjective() {
-    const game = this.game;
-    const L = game.city.landmarks;
-    const i = this.index;
-    const s = this.stage;
-    if (i === 0) {
-      this.objective = 'Go to The Rusty Anchor to meet Sal Vega';
-      this.marker = L.anchor;
-    } else if (i === 1) {
-      if (s === 0) {
-        this.objective = 'Steal a car — press E next to any car';
-        this.marker = null;
-      } else {
-        this.objective = 'Drive the car to the Color Rush Garage';
-        this.marker = L.garage;
-      }
-    } else if (i === 2) {
-      if (s === 0) {
-        this.objective = 'Go to the Harbor Docks and pick up the package';
-        this.marker = L.docks;
-      } else {
-        this.objective = 'Deliver the package to Sal at The Rusty Anchor';
-        this.marker = L.anchor;
-      }
-    } else if (i === 3) {
-      if (s === 0) {
-        this.objective = `Survive the police — ${Math.ceil(this.timer)}s left`;
-        this.marker = null;
-      } else {
-        this.objective = 'Lose the cops — get your wanted level to zero';
-        this.marker = null;
-      }
-    } else if (i === 4) {
-      if (s === 0) {
-        this.objective = 'Pick up the cash at Vera Tower';
-        this.marker = L.tower;
-      } else {
-        this.objective = `Deliver the cash to the Palma Beach Hut — ${Math.ceil(this.timer)}s left`;
-        this.marker = L.beachHut;
-      }
-    } else if (i === 5) {
-      if (s === 0) {
-        this.objective = "Get to the Foundry Yard — the Vipers are waiting";
-        this.marker = L.foundry;
-      } else {
-        const left = game.vipers.filter((v) => v.state !== 'down').length;
-        this.objective = `Take down the Vipers — ${left} left`;
-        this.marker = L.foundry;
-      }
+function passStage(game) {
+  const story = game.story;
+  story.stage++;
+  if (story.stage >= STORY[story.index].stages.length) {
+    const reward = STORY[story.index].reward;
+    game.player.money += reward;
+    game.audio.missionPass();
+    game.banner = { title: 'Mission Passed', lines: [`+$${reward}`, STORY[story.index].title], t: 0 };
+    story.index++;
+    story.active = false;
+    story.data = {};
+    game.objective = null;
+    game.saveDirty = true;
+    if (story.index >= STORY.length) {
+      game.banner = { title: 'Debt Paid', lines: ['Tomas: "We are square, Rhea. The bay is yours."', 'Free roam: courier jobs and shells remain.'], t: 0 };
     }
+  } else {
+    setupStage(game);
   }
+}
 
-  /** Distance from the player to the current marker, in metres (1m = 4px). */
-  markerDistance() {
-    if (!this.marker) return 0;
-    const p = this.game.player;
-    const px = p.inCar ? p.inCar.x : p.x;
-    const py = p.inCar ? p.inCar.y : p.y;
-    return Math.round(Math.hypot(this.marker.x - px, this.marker.y - py) / 4);
-  }
+export function failMission(game, reason) {
+  const story = game.story;
+  if (!story.active) return;
+  story.active = false;
+  story.data = {};
+  game.objective = null;
+  game.audio.missionFail();
+  game.banner = { title: 'Mission Failed', lines: [reason, 'See Tomas at the diner to try again.'], t: 0 };
+}
 
-  nearMarker(range) {
-    if (!this.marker) return false;
-    const p = this.game.player;
-    const px = p.inCar ? p.inCar.x : p.x;
-    const py = p.inCar ? p.inCar.y : p.y;
-    return Math.hypot(this.marker.x - px, this.marker.y - py) < range;
-  }
+export function startCourierJob(game) {
+  if (game.job) return false;
+  const a = randomRoadPoint(game.rng);
+  const b = randomRoadPoint(game.rng);
+  const d = dist(a.x, a.y, b.x, b.y);
+  game.job = {
+    stage: 'pickup',
+    from: a,
+    to: b,
+    timer: 40 + d / 22,
+    pay: Math.round(40 + d * 0.055),
+  };
+  game.banner = { title: 'Courier Job', lines: [`Pick up the parcel. Pay $${game.job.pay}.`], t: 0 };
+  return true;
+}
 
-  update(dt) {
-    const game = this.game;
-    if (this.done || !this.active) return;
-    const m = this.current;
-    if (!m) return;
-    const L = game.city.landmarks;
+export function updateMissions(game, dt) {
+  const story = game.story;
+  const pp = playerPos(game);
+  game.objective = null;
 
-    if (this.index === 0) {
-      if (this.nearMarker(70)) this.completeMission();
-    } else if (this.index === 1) {
-      if (this.stage === 0) {
-        if (game.player.inCar) {
-          this.stage = 1;
-          game.addToast('Nice wheels. Now bring it to the garage.', '#ffb02e');
-          this.refreshObjective();
-        }
-      } else if (this.nearMarker(80) && game.player.inCar) {
-        this.completeMission();
+  if (story.active) {
+    const stage = STORY[story.index].stages[story.stage];
+    const point = stagePoint(game, stage);
+    if (point) game.objective = { x: point.x, y: point.y, text: stage.text };
+    else game.objective = { x: pp.x, y: pp.y, text: stage.text, noMarker: true };
+
+    if (story.timer > 0) {
+      story.timer -= dt;
+      game.objective.text = `${stage.text}  (${Math.ceil(story.timer)}s)`;
+      if (story.timer <= 0) { failMission(game, 'Out of time.'); return; }
+    }
+
+    switch (stage.type) {
+      case 'goto':
+      case 'pickup':
+      case 'deliver': {
+        if (point && dist(pp.x, pp.y, point.x, point.y) < 44) passStage(game);
+        break;
       }
-    } else if (this.index === 2) {
-      if (this.stage === 0) {
-        if (this.nearMarker(70)) {
-          this.stage = 1;
-          game.addToast('Package secured. The docks are hot — move!', '#e03a2f');
-          addHeat(game, 120, 'stealing the package');
-          this.refreshObjective();
-        }
-      } else if (this.nearMarker(70)) {
-        this.completeMission();
+      case 'shootout': {
+        const alive = (story.data.hostiles || []).filter((h) => !h.dead).length;
+        game.objective.text = `${stage.text} (${alive} left)`;
+        if (alive === 0) passStage(game);
+        break;
       }
-    } else if (this.index === 3) {
-      if (this.stage === 0) {
-        this.timer -= dt;
-        this.refreshObjective();
-        if (this.timer <= 0) {
-          this.stage = 1;
-          game.addToast('A minute survived. Now lose them.', '#ffb02e');
-          this.refreshObjective();
+      case 'race': {
+        const cp = RACE_CHECKPOINTS[story.data.playerCp];
+        game.objective = { x: cp.x, y: cp.y, text: `Checkpoint ${story.data.playerCp + 1}/${RACE_CHECKPOINTS.length} — beat Vex!` };
+        if (dist(pp.x, pp.y, cp.x, cp.y) < 60) {
+          story.data.playerCp++;
+          game.audio.star();
+          if (story.data.playerCp >= RACE_CHECKPOINTS.length) { passStage(game); break; }
         }
-      } else if (game.wanted.stars === 0) {
-        this.completeMission();
-      }
-    } else if (this.index === 4) {
-      if (this.stage === 0) {
-        if (this.nearMarker(70)) {
-          this.stage = 1;
-          this.timer = 150;
-          game.addToast('Cash in hand. Two stars — run the beach road!', '#e03a2f');
-          addHeat(game, 300, 'the night drop');
-          this.refreshObjective();
-        }
-      } else {
-        this.timer -= dt;
-        this.refreshObjective();
-        if (this.nearMarker(70)) {
-          this.completeMission();
-        } else if (this.timer <= 0) {
-          game.addToast('Too slow — the drop went cold. Try again.', '#e03a2f');
-          this.startMission(4);
-        }
-      }
-    } else if (this.index === 5) {
-      if (this.stage === 0) {
-        if (this.nearMarker(140)) {
-          this.stage = 1;
-          game.vipers.length = 0;
-          for (let k = 0; k < 5; k++) {
-            game.vipers.push(makeViper(
-              L.foundry.x + game.rng.range(-120, 180),
-              L.foundry.y + game.rng.range(-40, 220),
-              game.rng,
-            ));
+        const rival = story.data.rival;
+        if (rival && !rival.dead) {
+          const rcp = RACE_CHECKPOINTS[story.data.rivalCp];
+          const ni = nearestIntersection(rcp.x, rcp.y);
+          driveToward(rival, game, dt, ni.i, ni.j, 330);
+          if (dist(rival.x, rival.y, rcp.x, rcp.y) < 60) {
+            story.data.rivalCp++;
+            if (story.data.rivalCp >= RACE_CHECKPOINTS.length) failMission(game, 'Vex got there first.');
           }
-          game.player.hasPistol = true;
-          game.player.ammo = Math.max(game.player.ammo, 72);
-          game.addToast("Five Vipers. Dario Kane is watching. Make it count.", '#e03a2f');
-          addHeat(game, 120, 'the foundry fight');
-          this.refreshObjective();
         }
-      } else if (game.vipers.every((v) => v.state === 'down')) {
-        this.completeMission();
+        break;
+      }
+      case 'tail': {
+        const courier = story.data.courier;
+        if (!courier || courier.dead) { failMission(game, 'The courier is gone.'); break; }
+        const ni = nearestIntersection(12 * 320, 12 * 320);
+        driveToward(courier, game, dt, ni.i, ni.j, 175);
+        const d = dist(pp.x, pp.y, courier.x, courier.y);
+        game.objective = { x: courier.x, y: courier.y, text: `${stage.text} (${Math.floor(story.data.tailTime)}/${stage.seconds}s)` };
+        if (d >= 90 && d <= 340) {
+          story.data.tailTime += dt;
+          story.data.lostTimer = 0;
+        } else {
+          story.data.lostTimer += dt;
+          game.objective.text = d < 90 ? 'Too close! Back off!' : 'Too far! Catch up!';
+          if (story.data.lostTimer > 8) { failMission(game, 'You lost the courier.'); break; }
+        }
+        if (story.data.tailTime >= stage.seconds) passStage(game);
+        break;
+      }
+      case 'steal': {
+        const van = story.data.van;
+        if (!van || van.dead) { failMission(game, 'The van is wrecked.'); break; }
+        game.objective = { x: van.x, y: van.y, text: stage.text };
+        if (game.player.inCar === van) {
+          addHeat(game, 80);
+          passStage(game);
+        }
+        break;
+      }
+      case 'evade': {
+        game.objective = { x: pp.x, y: pp.y, text: stage.text, noMarker: true };
+        if (wantedStars(game) === 0) passStage(game);
+        break;
+      }
+    }
+    return;
+  }
+
+  // Courier side job.
+  if (game.job) {
+    const job = game.job;
+    const target = job.stage === 'pickup' ? job.from : job.to;
+    game.objective = {
+      x: target.x, y: target.y,
+      text: job.stage === 'pickup' ? 'Pick up the parcel' : `Deliver the parcel (${Math.ceil(job.timer)}s)`,
+    };
+    if (job.stage === 'deliver') {
+      job.timer -= dt;
+      if (job.timer <= 0) {
+        game.job = null;
+        game.audio.missionFail();
+        game.banner = { title: 'Job Failed', lines: ['The parcel went cold.'], t: 0 };
+        return;
+      }
+    }
+    if (dist(pp.x, pp.y, target.x, target.y) < 42) {
+      if (job.stage === 'pickup') {
+        job.stage = 'deliver';
+        game.audio.pickup();
       } else {
-        this.refreshObjective();
+        game.player.money += job.pay;
+        game.stats.jobsDone++;
+        game.audio.cash();
+        game.banner = { title: 'Delivered', lines: [`+$${job.pay}`], t: 0 };
+        game.job = null;
+        game.saveDirty = true;
       }
     }
   }
+}
 
-  completeMission() {
-    const game = this.game;
-    const m = this.current;
-    game.save.cash += m.reward;
-    game.player.cash = game.save.cash;
-    game.save.missionsDone.push(m.id);
-    game.save.stats.missionsPlayed++;
-    game.audio.cash();
-    game.audio.fanfare();
-    game.addToast(`Mission complete: ${m.title}  +$${m.reward}`, '#34c759');
-    clearWanted(game);
-    game.persistSave();
-    if (this.index === 0) {
-      game.addToast("Sal: 'You drive good, kid. I got work for you.'", '#ffb02e');
-    }
-    if (this.index === 1) {
-      game.player.hasPistol = true;
-      game.player.ammo += 48;
-      game.addToast("Sal left a pistol in the glovebox. It's yours now.", '#ffb02e');
-    }
-    if (this.index === 5) {
-      this.done = true;
-      this.active = false;
-      game.save.storyComplete = true;
-      game.save.missionIndex = MISSIONS.length;
-      game.persistSave();
-      game.storyComplete();
-      return;
-    }
-    this.index++;
-    game.save.missionIndex = this.index;
-    game.persistSave();
-    this.startMission(this.index);
-  }
+export function clearWantedAtRespray(game) {
+  clearWanted(game);
 }

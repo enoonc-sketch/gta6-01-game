@@ -1,47 +1,55 @@
-// save.js — localStorage save slot for SOLMAR HEAT: cash, story progress
-// and lifetime stats. Nothing leaves the player's own browser.
+// Save and load the player's progress in localStorage: cash, weapons, story
+// progress, lucky shells found and where Rhea is standing. No server involved.
 
-import { SAVE_KEY } from './config.js';
+const SAVE_KEY = 'cinderbay.save.v1';
 
-export function defaultSave() {
-  return {
-    version: 1,
-    cash: 250,
-    missionIndex: 0,
-    storyComplete: false,
-    missionsDone: [],
-    stats: {
-      carsStolen: 0,
-      distanceDriven: 0,
-      pedsFled: 0,
-      shotsFired: 0,
-      missionsPlayed: 0,
-    },
-    settings: { muted: false },
-  };
-}
-
-export function loadSave() {
+export function saveGame(game) {
   try {
-    const raw = window.localStorage.getItem(SAVE_KEY);
-    if (!raw) return defaultSave();
-    const parsed = JSON.parse(raw);
-    const save = defaultSave();
-    return {
-      ...save,
-      ...parsed,
-      stats: { ...save.stats, ...(parsed.stats || {}) },
-      settings: { ...save.settings, ...(parsed.settings || {}) },
+    const data = {
+      money: game.player.money,
+      weapons: game.player.weapons,
+      ammo: game.player.ammo,
+      currentWeapon: game.player.currentWeapon,
+      armor: game.player.armor,
+      missionIndex: game.story.index,
+      shellsFound: game.city.shells.map((s) => (s.taken ? 1 : 0)).join(''),
+      x: game.player.x,
+      y: game.player.y,
+      clock: game.clock,
+      jobsDone: game.stats.jobsDone,
+      savedAt: Date.now(),
     };
+    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+    return true;
   } catch {
-    return defaultSave();
+    return false;
   }
 }
 
-export function storeSave(save) {
+export function loadGame() {
   try {
-    window.localStorage.setItem(SAVE_KEY, JSON.stringify(save));
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (typeof data !== 'object' || data === null) return null;
+    return data;
   } catch {
-    // Storage full or blocked (private mode): the game still plays.
+    return null;
+  }
+}
+
+export function hasSave() {
+  try {
+    return localStorage.getItem(SAVE_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
+export function clearSave() {
+  try {
+    localStorage.removeItem(SAVE_KEY);
+  } catch {
+    // storage unavailable; nothing to clear
   }
 }

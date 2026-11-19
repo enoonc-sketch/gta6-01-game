@@ -1,19 +1,105 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Solmar Heat — Open-World Crime</title>
-<style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #10141c; }
-  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-  /* Read aloud, never shown: the status line screen readers announce. */
-  #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-</style>
+<title>CINDER BAY — an open-world crime game</title>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-<canvas id="game" aria-label="Solmar Heat: an open-world crime game. Drive around Solmar City, steal cars, outrun the police and finish Sal Vega's six missions."></canvas>
-<p id="status" role="status" aria-live="polite"></p>
-<script type="module" src="./src/main.js"></script>
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div id="hud-top-right">
+    <div id="hud-money">$120</div>
+    <div id="hud-clock">10:00 AM</div>
+    <div id="hud-stars"></div>
+  </div>
+  <div id="hud-objective"></div>
+  <div id="bust-wrap"><span>BUSTED</span><div id="bust-bar"><div id="bust-fill"></div></div></div>
+  <div id="hud-bottom-left">
+    <canvas id="minimap" width="168" height="168"></canvas>
+    <div id="hud-district">Downtown</div>
+  </div>
+  <div id="hud-bottom-right">
+    <div class="bar-label">Health</div>
+    <div class="bar"><div id="hp-fill"></div></div>
+    <div class="bar-label">Armor</div>
+    <div class="bar"><div id="armor-fill"></div></div>
+    <div id="hud-weapon">Fists</div>
+    <div id="hud-speed"></div>
+    <div id="hud-shells">Shells 0/20</div>
+  </div>
+  <div id="hud-prompt"></div>
+  <div id="banner" class="hidden">
+    <div id="banner-title"></div>
+    <div id="banner-lines"></div>
+  </div>
+</div>
+
+<div id="title-screen" class="screen">
+  <div class="panel title-panel">
+    <h1 class="game-title">CINDER BAY</h1>
+    <p class="tagline">Rhea Calloway is back in town — and in debt to Old Tomas.<br>
+    Drive, steal, run and shoot your way through six jobs in a sun-soaked port city.</p>
+    <button id="btn-new" class="btn primary">New Game</button>
+    <button id="btn-continue" class="btn">Continue</button>
+    <button id="btn-help" class="btn">How to Play</button>
+    <p class="fineprint">Keyboard + mouse · saves on this device · an original game, no assets borrowed</p>
+  </div>
+</div>
+
+<div id="help-screen" class="screen hidden">
+  <div class="panel">
+    <h2>How to Play</h2>
+    <table class="keys">
+      <tr><td>W A S D / Arrows</td><td>Move / drive</td></tr>
+      <tr><td>Shift</td><td>Sprint</td></tr>
+      <tr><td>Mouse</td><td>Aim</td></tr>
+      <tr><td>Left click / Space</td><td>Shoot / punch (handbrake in a car)</td></tr>
+      <tr><td>E</td><td>Enter / leave car, talk, shop, respray</td></tr>
+      <tr><td>1–4 or Q</td><td>Switch weapon</td></tr>
+      <tr><td>H</td><td>Horn</td></tr>
+      <tr><td>M</td><td>Mute</td></tr>
+      <tr><td>Esc / P</td><td>Pause</td></tr>
+    </table>
+    <p>Follow the gold marker for jobs. Crimes raise your wanted stars — break line of
+    sight to cool down, or pay Milo to respray the car. Courier jobs wait at blue phone
+    booths, and 20 lucky shells hide around the bay.</p>
+    <button id="btn-help-back" class="btn primary">Back</button>
+  </div>
+</div>
+
+<div id="pause-screen" class="screen hidden">
+  <div class="panel">
+    <h2>Paused</h2>
+    <button id="btn-resume" class="btn primary">Resume</button>
+    <button id="btn-save" class="btn">Save Game</button>
+    <button id="btn-quit-title" class="btn">Save &amp; Title Screen</button>
+  </div>
+</div>
+
+<div id="end-screen" class="screen hidden">
+  <div class="panel end-panel">
+    <h1 id="end-title">WASTED</h1>
+    <p id="end-line"></p>
+    <button id="btn-respawn" class="btn primary">Continue</button>
+  </div>
+</div>
+
+<div id="shop-menu" class="screen hidden">
+  <div class="panel">
+    <h2>Cinder Arms</h2>
+    <p>Cash: <span id="shop-cash">$0</span></p>
+    <button id="buy-pistol" class="btn">P9 Pistol</button>
+    <button id="buy-smg" class="btn">Kestrel SMG</button>
+    <button id="buy-scatter" class="btn">Scattergun</button>
+    <button id="buy-ammo" class="btn">Ammo crate — $60</button>
+    <button id="buy-armor" class="btn">Body armor — $300</button>
+    <button id="btn-shop-close" class="btn primary">Leave</button>
+  </div>
+</div>
+
+<script type="module" src="src/main.js"></script>
 </body>
 </html>

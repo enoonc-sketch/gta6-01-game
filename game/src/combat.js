@@ -1,186 +1,316 @@
-// combat.js — shooting, punching, bullets, car explosions and the Viper
-// gang members who shoot back during the final mission.
+// Combat: weapons, bullets, damage, particles, explosions and pickups.
+// Bullets are fast projectiles stepped twice per frame so they do not tunnel.
 
-import { PLAYER } from './config.js';
+import { WEAPONS, WANTED } from './config.js';
+import { dist, clamp } from './rng.js';
+import { damageCar, makePickup } from './entities.js';
 import { addHeat } from './police.js';
+import { pedFleeFrom } from './traffic.js';
 
-export function makeBullet(x, y, angle, fromPlayer, damage) {
-  return {
-    x, y,
-    vx: Math.cos(angle) * 900,
-    vy: Math.sin(angle) * 900,
-    life: 0.7,
-    fromPlayer,
-    damage,
-  };
+export function spawnParticles(game, x, y, opts) {
+  const n = opts.count || 6;
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = (opts.speed || 90) * (0.3 + Math.random() * 0.9);
+    game.particles.push({
+      x, y,
+      vx: Math.cos(a) * sp + (opts.vx || 0),
+      vy: Math.sin(a) * sp + (opts.vy || 0),
+      life: 0,
+      maxLife: (opts.life || 0.45) * (0.6 + Math.random() * 0.8),
+      size: (opts.size || 3) * (0.6 + Math.random() * 0.9),
+      color: opts.color || '#ffd166',
+      type: opts.type || 'spark',
+      grow: opts.grow || 0,
+    });
+  }
 }
 
-/** Fire the player's pistol toward the mouse. Returns true if a shot left. */
+export function shootBullet(game, x, y, angle, from) {
+  const speed = 940;
+  game.bullets.push({
+    x: x + Math.cos(angle) * 16,
+    y: y + Math.sin(angle) * 16,
+    vx: Math.cos(angle) * speed,
+    vy: Math.sin(angle) * speed,
+    life: 0.62,
+    from,
+    damage: from === 'player' ? 0 : 9, // player damage set by weapon below
+  });
+  spawnParticles(game, x + Math.cos(angle) * 20, y + Math.sin(angle) * 20, {
+    count: 2, speed: 40, life: 0.08, size: 5, color: '#ffe9a3', type: 'flash',
+  });
+}
+
 export function playerShoot(game) {
   const p = game.player;
-  if (!p.hasPistol || p.ammo <= 0 || p.pistolCooldown > 0) return false;
-  p.pistolCooldown = PLAYER.pistolCooldown;
-  p.ammo--;
-  p.shotsFired = (p.shotsFired || 0) + 1;
-  game.save.stats.shotsFired++;
-  game.shotsFiredRecently = 1.2;
-  const aim = game.aimAngle();
-  const ox = p.inCar ? p.inCar.x : p.x;
-  const oy = p.inCar ? p.inCar.y : p.y;
-  game.bullets.push(makeBullet(
-    ox + Math.cos(aim) * 26, oy + Math.sin(aim) * 26,
-    aim, true, PLAYER.pistolDamage,
-  ));
-  game.audio.gunshot();
-  game.addMuzzle(ox + Math.cos(aim) * 30, oy + Math.sin(aim) * 30, aim);
-  addHeat(game, 8, 'shooting');
-  return true;
-}
-
-/** A punch in the direction the player faces (or toward the mouse). */
-export function playerPunch(game) {
-  const p = game.player;
-  if (p.punchCooldown > 0) return;
-  p.punchCooldown = 0.45;
-  const aim = game.aimAngle();
-  const ox = p.inCar ? p.inCar.x : p.x;
-  const oy = p.inCar ? p.inCar.y : p.y;
-  let hitSomething = false;
-  const tryHit = (target, tx, ty) => {
-    const dx = tx - ox;
-    const dy = ty - oy;
-    const dist = Math.hypot(dx, dy);
-    if (dist > PLAYER.punchRange + 14) return;
-    const ang = Math.atan2(dy, dx);
-    let diff = Math.abs(ang - aim);
-    if (diff > Math.PI) diff = Math.PI * 2 - diff;
-    if (diff > PLAYER.punchArc) return;
-    target.health -= PLAYER.punchDamage;
-    hitSomething = true;
-    game.addHitSpark(tx, ty);
-  };
-  for (const ped of game.peds) {
-    if (ped.state !== 'down') tryHit(ped, ped.x, ped.y);
-  }
-  for (const viper of game.vipers) {
-    if (viper.state !== 'down') tryHit(viper, viper.x, viper.y);
-  }
-  for (const cop of game.cops) tryHit(cop, cop.x, cop.y);
-  game.audio.punch();
-  if (hitSomething) game.addShake(2);
-}
-
-/** Move bullets, test hits against people and cars. */
-export function updateBullets(game, dt) {
-  for (let i = game.bullets.length - 1; i >= 0; i--) {
-    const b = game.bullets[i];
-    b.x += b.vx * dt;
-    b.y += b.vy * dt;
-    b.life -= dt;
-    let dead = b.life <= 0;
-    if (!dead) dead = bulletHits(game, b);
-    if (dead) game.bullets.splice(i, 1);
-  }
-}
-
-function bulletHits(game, b) {
-  // People first.
-  const hitPerson = (t, radius) => {
-    if (Math.hypot(t.x - b.x, t.y - b.y) < radius + 6) {
-      t.health -= b.damage;
-      game.addHitSpark(b.x, b.y);
-      return true;
-    }
-    return false;
-  };
-  for (const ped of game.peds) {
-    if (ped.state !== 'down' && hitPerson(ped, 12)) {
-      ped.state = 'down';
-      if (b.fromPlayer) addHeat(game, 60, 'shooting a pedestrian');
-      return true;
-    }
-  }
-  for (const viper of game.vipers) {
-    if (viper.state !== 'down' && hitPerson(viper, 13)) {
-      if (viper.health <= 0) {
-        viper.state = 'down';
-        game.addToast('Viper down', '#ffb02e');
+  const w = WEAPONS[p.currentWeapon];
+  if (p.currentWeapon === 'fists') {
+    p.punchAnim = 1;
+    game.audio.punch();
+    const hx = p.x + Math.cos(p.aimAngle) * 26;
+    const hy = p.y + Math.sin(p.aimAngle) * 26;
+    let hitSomething = false;
+    for (const ped of [...game.peds, ...game.cops]) {
+      if (ped.dead) continue;
+      if (dist(hx, hy, ped.x, ped.y) < 26) {
+        damagePed(game, ped, w.damage, true);
+        ped.x += Math.cos(p.aimAngle) * 10;
+        ped.y += Math.sin(p.aimAngle) * 10;
+        hitSomething = true;
       }
-      return true;
     }
+    for (const car of game.cars) {
+      if (car.dead) continue;
+      if (dist(hx, hy, car.x, car.y) < 30) {
+        damageCar(car, 3);
+        spawnParticles(game, hx, hy, { count: 3, speed: 60, life: 0.2, color: '#cfd8dc' });
+        hitSomething = true;
+      }
+    }
+    if (hitSomething) game.audio.hit();
+    scareNearby(game, p.x, p.y, 180);
+    return;
   }
+  if (p.ammo[p.currentWeapon] <= 0) {
+    game.audio.hit();
+    p.currentWeapon = 'fists';
+    return;
+  }
+  p.ammo[p.currentWeapon] -= w.ammoUse;
+  if (p.currentWeapon === 'scatter') game.audio.shotgun();
+  else game.audio.shot();
+  for (let i = 0; i < w.pellets; i++) {
+    const a = p.aimAngle + (Math.random() - 0.5) * 2 * w.spread;
+    shootBullet(game, p.x, p.y, a, 'player');
+    game.bullets[game.bullets.length - 1].damage = w.damage;
+  }
+  scareNearby(game, p.x, p.y, 420);
+  // Gunfire near an officer is its own crime.
   for (const cop of game.cops) {
-    if (hitPerson(cop, 12)) {
-      if (cop.health <= 0) {
-        game.cops.splice(game.cops.indexOf(cop), 1);
-        addHeat(game, 260, 'shooting an officer');
-      } else {
-        addHeat(game, 60, 'shooting an officer');
+    if (!cop.dead && dist(p.x, p.y, cop.x, cop.y) < 380) { addHeat(game, WANTED.crimeHeat.shootNearCop); break; }
+  }
+}
+
+export function scareNearby(game, x, y, radius) {
+  for (const ped of game.peds) {
+    if (!ped.dead && dist(ped.x, ped.y, x, y) < radius) pedFleeFrom(ped, x, y, 2.6);
+  }
+}
+
+export function damagePed(game, ped, amount, byPlayer) {
+  if (ped.dead) return;
+  ped.hp -= amount;
+  spawnParticles(game, ped.x, ped.y, { count: 4, speed: 70, life: 0.3, color: '#c0392b', type: 'puff', size: 4 });
+  if (ped.hp <= 0) {
+    ped.dead = true;
+    ped.downTimer = 0;
+    if (byPlayer) {
+      addHeat(game, ped.kind === 'cop' ? WANTED.crimeHeat.killCop : WANTED.crimeHeat.killPed);
+      if (ped.kind === 'ped' && Math.random() < 0.55) {
+        game.pickups.push(makePickup(ped.x, ped.y, 'cash', 15 + Math.floor(Math.random() * 40)));
       }
-      return true;
+    }
+  } else if (byPlayer) {
+    addHeat(game, 3);
+    if (ped.kind === 'ped') pedFleeFrom(ped, game.player.x, game.player.y, 3);
+  }
+}
+
+export function damagePlayer(game, amount) {
+  const p = game.player;
+  if (p.dead) return;
+  let left = amount;
+  if (p.armor > 0) {
+    const absorbed = Math.min(p.armor, left * 0.7);
+    p.armor -= absorbed;
+    left -= absorbed;
+  }
+  p.hp -= left;
+  game.hurtFlash = 1;
+  if (p.hp <= 0) {
+    p.hp = 0;
+    p.dead = true;
+    game.onPlayerDeath();
+  }
+}
+
+export function explodeCar(game, car) {
+  if (car.exploded) return;
+  car.exploded = true;
+  car.dead = true;
+  car.burning = false;
+  game.audio.explosion();
+  spawnParticles(game, car.x, car.y, { count: 26, speed: 260, life: 0.7, size: 7, color: '#ff9f43', type: 'flash' });
+  spawnParticles(game, car.x, car.y, { count: 18, speed: 90, life: 1.6, size: 10, color: '#555', type: 'smoke', grow: 14 });
+  const hurt = (e, r) => {
+    const d = dist(car.x, car.y, e.x, e.y);
+    if (d < 110) return (1 - d / 110) * 70;
+    return 0;
+  };
+  const pd = hurt(game.player, 0);
+  if (pd > 0 && !game.player.inCar) damagePlayer(game, pd);
+  if (game.player.inCar && game.player.inCar !== car) {
+    const cd = hurt(game.player.inCar, 0);
+    if (cd > 0) damageCar(game.player.inCar, cd);
+  }
+  for (const ped of [...game.peds, ...game.cops]) {
+    const d = hurt(ped, 0);
+    if (d > 0) damagePed(game, ped, d, false);
+  }
+  for (const other of game.cars) {
+    if (other !== car) {
+      const d = hurt(other, 0);
+      if (d > 0) damageCar(other, d);
     }
   }
-  // The player can be shot by gang members.
-  if (!b.fromPlayer) {
-    const p = game.player;
-    const px = p.inCar ? p.inCar.x : p.x;
-    const py = p.inCar ? p.inCar.y : p.y;
-    if (Math.hypot(px - b.x, py - b.y) < 18) {
-      game.damagePlayer(b.damage * 0.5);
-      return true;
-    }
+  addHeat(game, WANTED.crimeHeat.explosion);
+  game.shake = Math.max(game.shake, 0.7);
+}
+
+function bulletHitsBuilding(game, b) {
+  for (const box of game.city.solids) {
+    if (b.x >= box.x && b.x <= box.x + box.w && b.y >= box.y && b.y <= box.y + box.h) return true;
   }
-  // Cars: bullets dent them, and a wrecked car explodes.
-  for (const car of game.cars) {
-    const dx = b.x - car.x;
-    const dy = b.y - car.y;
-    const along = Math.abs(dx * Math.cos(car.angle) + dy * Math.sin(car.angle));
-    const across = Math.abs(-dx * Math.sin(car.angle) + dy * Math.cos(car.angle));
-    if (along < 28 && across < 16) {
-      car.health -= b.damage;
-      game.addHitSpark(b.x, b.y);
-      if (car.health <= 0) game.explodeCar(car);
-      return true;
-    }
-  }
-  // Buildings stop bullets.
-  if (game.cityHits(b.x, b.y, 2)) return true;
   return false;
 }
 
-/** Viper gang members: guard their turf, then shoot at the player. */
-export function updateVipers(game, dt) {
+export function updateBullets(game, dt) {
+  const kept = [];
+  for (const b of game.bullets) {
+    b.life -= dt;
+    if (b.life <= 0) continue;
+    let alive = true;
+    for (let step = 0; step < 2 && alive; step++) {
+      b.x += b.vx * dt * 0.5;
+      b.y += b.vy * dt * 0.5;
+      if (bulletHitsBuilding(game, b)) {
+        spawnParticles(game, b.x, b.y, { count: 2, speed: 50, life: 0.15, color: '#d7ccc8' });
+        alive = false;
+        break;
+      }
+      // Cars
+      for (const car of game.cars) {
+        if (car.dead && !car.burning) continue;
+        if (dist(b.x, b.y, car.x, car.y) < 24) {
+          damageCar(car, b.damage * 0.55);
+          spawnParticles(game, b.x, b.y, { count: 3, speed: 80, life: 0.18, color: '#ffd166' });
+          alive = false;
+          break;
+        }
+      }
+      if (!alive) break;
+      // People
+      const targets = b.from === 'player' ? [...game.peds, ...game.cops] : [...game.peds];
+      for (const ped of targets) {
+        if (ped.dead) continue;
+        if (b.from !== 'player' && ped.kind === 'cop') continue;
+        if (dist(b.x, b.y, ped.x, ped.y) < 12) {
+          damagePed(game, ped, b.damage, b.from === 'player');
+          alive = false;
+          break;
+        }
+      }
+      if (!alive) break;
+      // The player (only from hostile fire)
+      if (b.from !== 'player' && !game.player.dead && !game.player.inCar) {
+        if (dist(b.x, b.y, game.player.x, game.player.y) < 13) {
+          damagePlayer(game, b.damage);
+          alive = false;
+        }
+      }
+    }
+    if (alive) kept.push(b);
+  }
+  game.bullets = kept;
+}
+
+export function updateParticles(game, dt) {
+  const kept = [];
+  for (const p of game.particles) {
+    p.life += dt;
+    if (p.life >= p.maxLife) continue;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vx *= Math.exp(-2.2 * dt);
+    p.vy *= Math.exp(-2.2 * dt);
+    if (p.type === 'smoke') p.vy -= 26 * dt;
+    if (p.grow) p.size += p.grow * dt;
+    kept.push(p);
+  }
+  game.particles = kept;
+}
+
+// Hostile pedestrians (mission gunmen): keep some distance and shoot at Rhea.
+export function updateHostiles(game, dt) {
   const p = game.player;
-  const px = p.inCar ? p.inCar.x : p.x;
-  const py = p.inCar ? p.inCar.y : p.y;
-  for (const viper of game.vipers) {
-    if (viper.state === 'down') continue;
-    const dx = px - viper.x;
-    const dy = py - viper.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist < 420) viper.state = 'attack';
-    else if (viper.state === 'attack' && dist > 560) viper.state = 'guard';
-    if (viper.state !== 'attack') continue;
-    viper.angle = Math.atan2(dy, dx);
-    viper.shootCooldown -= dt;
-    // Strafe closer when far away, hold ground when in range.
-    if (dist > 260) {
-      viper.x += (dx / dist) * 120 * dt;
-      viper.y += (dy / dist) * 120 * dt;
-      const fixed = game.cityFix(viper.x, viper.y, 10);
-      viper.x = fixed.x;
-      viper.y = fixed.y;
+  for (const ped of game.peds) {
+    if (!ped.hostile || ped.dead) continue;
+    const target = p.inCar || p;
+    const d = dist(ped.x, ped.y, target.x, target.y);
+    const ang = Math.atan2(target.y - ped.y, target.x - ped.x);
+    ped.angle = ang;
+    let move = 0;
+    if (d > 240) move = 1;
+    else if (d < 120) move = -1;
+    ped.vx = Math.cos(ang) * move * 120;
+    ped.vy = Math.sin(ang) * move * 120;
+    ped.x += ped.vx * dt;
+    ped.y += ped.vy * dt;
+    ped.walkPhase += dt * 8;
+    if (d < 420 && !p.dead) {
+      ped.shootCooldown -= dt;
+      if (ped.shootCooldown <= 0) {
+        ped.shootCooldown = 0.8 + Math.random() * 0.7;
+        shootBullet(game, ped.x, ped.y, ang + (Math.random() - 0.5) * 0.1, 'hostile');
+        game.audio.shot();
+      }
     }
-    if (viper.shootCooldown <= 0 && dist < 460) {
-      viper.shootCooldown = 1.1 + game.rng.float() * 0.9;
-      const spread = (game.rng.float() - 0.5) * 0.22;
-      game.bullets.push(makeBullet(
-        viper.x + Math.cos(viper.angle) * 20,
-        viper.y + Math.sin(viper.angle) * 20,
-        viper.angle + spread, false, 14,
-      ));
-      game.audio.gunshot();
-      game.addMuzzle(viper.x + Math.cos(viper.angle) * 24, viper.y + Math.sin(viper.angle) * 24, viper.angle);
+  }
+}
+
+export function updatePickups(game, dt) {
+  const p = game.player;
+  const kept = [];
+  for (const pk of game.pickups) {
+    pk.bobPhase += dt * 3;
+    const near = !p.inCar && dist(p.x, p.y, pk.x, pk.y) < 26;
+    if (near) {
+      applyPickup(game, pk);
+      continue;
     }
+    kept.push(pk);
+  }
+  game.pickups = kept;
+}
+
+function applyPickup(game, pk) {
+  const p = game.player;
+  game.audio.pickup();
+  switch (pk.type) {
+    case 'cash':
+      p.money += pk.amount;
+      game.floaters.push({ x: pk.x, y: pk.y, text: `+$${pk.amount}`, life: 0, color: '#7bed9f' });
+      break;
+    case 'health':
+      p.hp = clamp(p.hp + 40, 0, 100);
+      game.floaters.push({ x: pk.x, y: pk.y, text: '+Health', life: 0, color: '#ff8fa3' });
+      break;
+    case 'armor':
+      p.armor = clamp(p.armor + 50, 0, 100);
+      game.floaters.push({ x: pk.x, y: pk.y, text: '+Armor', life: 0, color: '#8ecae6' });
+      break;
+    case 'ammo':
+      for (const w of ['pistol', 'smg', 'scatter']) if (p.weapons[w]) p.ammo[w] += 30;
+      game.floaters.push({ x: pk.x, y: pk.y, text: '+Ammo', life: 0, color: '#ffd166' });
+      break;
+    case 'pistol':
+    case 'smg':
+    case 'scatter':
+      p.weapons[pk.type] = true;
+      p.ammo[pk.type] += pk.amount || 40;
+      p.currentWeapon = pk.type;
+      game.floaters.push({ x: pk.x, y: pk.y, text: WEAPONS[pk.type].name, life: 0, color: '#ffd166' });
+      break;
   }
 }
