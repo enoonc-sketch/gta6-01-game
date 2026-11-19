@@ -4,6 +4,8 @@
 import { POLICE, WANTED } from './config.js';
 import { clamp, dist, angleDiff } from './rng.js';
 import { makeCar, makePed, stepCarPhysics, collideCar, collideWithCity } from './entities.js';
+import { nearestIntersection } from './city.js';
+import { rainGrip } from './weather.js';
 import { shootBullet } from './combat.js';
 
 export function addHeat(game, amount) {
@@ -35,6 +37,8 @@ function anyCopSeesPlayer(game) {
   for (const car of game.cars) {
     if (car.police && !car.dead && dist(car.x, car.y, pp.x, pp.y) < POLICE.sightRadius) return true;
   }
+  // The helicopter's spotlight counts as eyes on Rhea.
+  if (game.heli && dist(game.heli.tx, game.heli.ty, pp.x, pp.y) < 170) return true;
   return false;
 }
 
@@ -52,6 +56,104 @@ function spawnPointNear(game, minD, maxD) {
     return { x, y: snapY + 19 };
   }
   return { x: pp.x + minD, y: pp.y };
+}
+
+// ------------------------------------------------------------ roadblocks
+
+export function spawnRoadblock(game) {
+  const p = game.player;
+  const focus = p.inCar || p;
+  const vx = focus.vx || 0;
+  const vy = focus.vy || 0;
+  const speed = Math.hypot(vx, vy);
+  if (speed < 50) return;
+  const ahead = {
+    x: clamp(focus.x + (vx / speed) * 620, 80, 4720),
+    y: clamp(focus.y + (vy / speed) * 620, 80, 4620),
+  };
+  const ni = nearestIntersection(ahead.x, ahead.y);
+  const cx = ni.i * 320;
+  const cy = ni.j * 320;
+  if (dist(cx, cy, focus.x, focus.y) < 320) return; // too close; try again later
+  const horizontal = Math.abs(vx) > Math.abs(vy);
+  const cars = [];
+  const props = [];
+  for (const off of [-25, 25]) {
+    const car = makeCar(
+      horizontal ? cx : cx + off,
+      horizontal ? cy + off : cy,
+      horizontal ? 0 : Math.PI / 2,
+      game.rng,
+      { driver: 'roadblock', police: true, color: '#e8ecf1', hp: 150 },
+    );
+    car.name = 'Roadblock';
+    game.cars.push(car);
+    cars.push(car);
+  }
+  for (const off of [-52, 0, 52]) {
+    const prop = {
+      x: horizontal ? cx : cx + off,
+      y: horizontal ? cy + off : cy,
+      type: 'barrier', r: 9, solid: true,
+      angle: horizontal ? Math.PI / 2 : 0,
+    };
+    game.city.props.push(prop);
+    props.push(prop);
+  }
+  game.roadblocks.push({ cars, props, x: cx, y: cy });
+}
+
+function clearRoadblock(game, rb) {
+  for (const prop of rb.props) {
+    const idx = game.city.props.indexOf(prop);
+    if (idx >= 0) game.city.props.splice(idx, 1);
+  }
+  for (const car of rb.cars) {
+    car.driver = null;
+    car.police = false;
+  }
+}
+
+function manageRoadblocks(game) {
+  const stars = wantedStars(game);
+  const pp = playerPos(game);
+  game.roadblocks = game.roadblocks.filter((rb) => {
+    if (stars < 4 || dist(rb.x, rb.y, pp.x, pp.y) > 1700) {
+      clearRoadblock(game, rb);
+      return false;
+    }
+    return true;
+  });
+  const want = stars >= 5 ? 2 : stars >= 4 ? 1 : 0;
+  if (game.roadblocks.length < want && game.player.inCar) spawnRoadblock(game);
+}
+
+// ------------------------------------------------------------ helicopter
+
+function updateHeli(game, dt) {
+  const stars = wantedStars(game);
+  const pp = playerPos(game);
+  if (stars >= 5 && !game.heli) {
+    game.heli = { x: pp.x + 520, y: pp.y - 380, vx: 0, vy: 0, tx: pp.x, ty: pp.y, rotor: 0 };
+  }
+  if (!game.heli) return;
+  if (stars < 5) { game.heli = null; return; }
+  const h = game.heli;
+  // Hover toward a point above the player with heavy lag; the spotlight
+  // target trails behind the player a little.
+  const dx = pp.x - h.x;
+  const dy = pp.y - h.y;
+  h.vx += dx * 1.6 * dt;
+  h.vy += dy * 1.6 * dt;
+  h.vx *= Math.exp(-1.1 * dt);
+  h.vy *= Math.exp(-1.1 * dt);
+  const sp = Math.hypot(h.vx, h.vy);
+  if (sp > 430) { h.vx = (h.vx / sp) * 430; h.vy = (h.vy / sp) * 430; }
+  h.x += h.vx * dt;
+  h.y += h.vy * dt;
+  h.tx += (pp.x - h.tx) * (1 - Math.exp(-2.2 * dt));
+  h.ty += (pp.y - h.ty) * (1 - Math.exp(-2.2 * dt));
+  h.rotor += dt * 34;
 }
 
 function manageSpawns(game, dt) {
@@ -76,7 +178,7 @@ function manageSpawns(game, dt) {
   const pp = playerPos(game);
   game.cops = game.cops.filter((c) => !c.dead && dist(c.x, c.y, pp.x, pp.y) < 1600);
   for (const car of game.cars) {
-    if (car.police && (stars === 0 || dist(car.x, car.y, pp.x, pp.y) > 1700)) {
+    if (car.police && car.driver !== 'roadblock' && (stars === 0 || dist(car.x, car.y, pp.x, pp.y) > 1700)) {
       car.driver = null;
       car.police = false;
       car.dead = car.dead || dist(car.x, car.y, pp.x, pp.y) > 1700;
@@ -99,6 +201,7 @@ function updatePoliceCar(car, game, dt) {
     steer: clamp(diff * 2.6, -1, 1),
     brake: d < 70 && playerSlow && Math.abs(car.speed) > 60,
     handbrake: Math.abs(diff) > 2.2 && Math.abs(car.speed) > 160,
+    gripMul: rainGrip(game),
   };
   stepCarPhysics(car, input, dt);
   const impact = collideCar(car, game.city.solids, game.city.props);
@@ -134,6 +237,8 @@ function updateFootCop(cop, game, dt) {
 export function updatePolice(game, dt) {
   if (game.player.dead) return;
   manageSpawns(game, dt);
+  manageRoadblocks(game);
+  updateHeli(game, dt);
 
   for (const car of game.cars) {
     if (car.police && car.driver === 'police' && !car.dead) updatePoliceCar(car, game, dt);

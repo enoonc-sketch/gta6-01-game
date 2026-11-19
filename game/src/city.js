@@ -59,7 +59,9 @@ export function districtNameAt(x, y) {
 const SPECIALS = [
   { key: 'diner', i: 7, j: 7, name: 'Salt & Smoke Diner', color: '#e07840' },
   { key: 'gunShop', i: 3, j: 6, name: 'Cinder Arms', color: '#5d6d7e' },
+  { key: 'pharmacy', i: 4, j: 5, name: 'Bayview Pharmacy', color: '#58b09c' },
   { key: 'respray', i: 10, j: 9, name: "Milo's Respray", color: '#7d3c98' },
+  { key: 'garage', i: 11, j: 10, name: 'Harbor Customs', color: '#c97b2d' },
   { key: 'hospital', i: 8, j: 4, name: 'St. Brigid General', color: '#ecf0f1' },
   { key: 'police', i: 6, j: 8, name: 'Cinder Bay Police HQ', color: '#2e4053' },
   { key: 'warehouse', i: 12, j: 12, name: 'Pier 9 Warehouse', color: '#935116' },

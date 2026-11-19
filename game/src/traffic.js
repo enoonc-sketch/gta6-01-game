@@ -1,10 +1,11 @@
 // Ambient life: traffic cars that drive the road grid in their lane and brake
 // for obstacles, and pedestrians who stroll the sidewalks and flee from danger.
 
-import { TRAFFIC, PEDS, WORLD } from './config.js';
+import { TRAFFIC, PEDS, WEATHER, WORLD } from './config.js';
 import { clamp, dist, angleDiff } from './rng.js';
 import { laneTarget, nearestIntersection, sidewalkRing } from './city.js';
 import { stepCarPhysics, collideCar, collideWithCity } from './entities.js';
+import { rainGrip } from './weather.js';
 
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
@@ -80,6 +81,7 @@ export function updateTrafficCar(car, game, dt) {
     steer: clamp(diff * 2.4, -1, 1),
     brake: blocked && car.speed > 24,
     handbrake: false,
+    gripMul: rainGrip(game),
   };
   stepCarPhysics(car, input, dt);
   const impact = collideCar(car, game.city.solids, game.city.props);
@@ -131,6 +133,7 @@ export function updatePed(ped, game, dt) {
     return;
   }
   const rng = game.rng;
+  const raining = game.weather && game.weather.rain > 0.3;
 
   // Dodge fast cars bearing down on them.
   for (const car of game.cars) {
@@ -140,17 +143,54 @@ export function updatePed(ped, game, dt) {
       break;
     }
   }
+  // A body on the pavement empties the sidewalk.
+  if (ped.state !== 'flee') {
+    for (const other of game.peds) {
+      if (other !== ped && other.dead && other.downTimer < 5 && dist(ped.x, ped.y, other.x, other.y) < 110) {
+        pedFleeFrom(ped, other.x, other.y, 2.2);
+        break;
+      }
+    }
+  }
 
-  let speed = PEDS.walkSpeed;
+  // Tourists stop to look around; vendors mind their pitch.
+  if (ped.state !== 'flee') {
+    if (ped.idleTimer > 0) {
+      ped.idleTimer -= dt;
+      ped.vx = 0;
+      ped.vy = 0;
+      return;
+    }
+    if (ped.type === 'tourist' && rng.chance(dt * 0.08)) ped.idleTimer = rng.range(1.5, 3.5);
+  }
+
+  let speed = ped.speed || PEDS.walkSpeed;
+  if (raining && ped.state !== 'flee') speed *= WEATHER.pedHurry;
   let tx;
   let ty;
   if (ped.state === 'flee' && ped.fleeFrom) {
+    if (!ped.panicked) {
+      ped.panicked = true;
+      if (rng.chance(0.6)) {
+        game.floaters.push({ x: ped.x, y: ped.y - 16, text: '!', life: 0, color: '#ffd166' });
+      }
+    }
     ped.fleeTimer -= dt;
     speed = PEDS.fleeSpeed;
     const away = Math.atan2(ped.y - ped.fleeFrom.y, ped.x - ped.fleeFrom.x);
     tx = ped.x + Math.cos(away) * 90;
     ty = ped.y + Math.sin(away) * 90;
-    if (ped.fleeTimer <= 0) { ped.state = 'walk'; ped.target = null; }
+    if (ped.fleeTimer <= 0) { ped.state = 'walk'; ped.target = null; ped.panicked = false; }
+  } else if (ped.type === 'vendor' && ped.homeSpot) {
+    // Vendors drift a few steps from their pitch and back.
+    if (!ped.target || dist(ped.x, ped.y, ped.target.x, ped.target.y) < 10) {
+      ped.target = {
+        x: ped.homeSpot.x + rng.range(-26, 26),
+        y: ped.homeSpot.y + rng.range(-26, 26),
+      };
+    }
+    tx = ped.target.x;
+    ty = ped.target.y;
   } else {
     if (!ped.target || dist(ped.x, ped.y, ped.target.x, ped.target.y) < 16) {
       ped.target = pedWalkTarget(ped, rng);

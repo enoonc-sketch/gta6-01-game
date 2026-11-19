@@ -5,6 +5,7 @@
 import { WORLD, WORLD_W, WORLD_H, PALETTE } from './config.js';
 import { clamp, dist } from './rng.js';
 import { WATER_Y, roadCenterX, roadCenterY } from './city.js';
+import { RACES } from './activities.js';
 
 const CHUNK = 1024;
 
@@ -261,6 +262,17 @@ export function createRenderer(canvas) {
       ctx.fillRect(p.x - 6, p.y - 6, 12, 12);
       ctx.fillStyle = '#dfe6e9';
       ctx.fillRect(p.x - 4, p.y - 4, 8, 5);
+    } else if (p.type === 'barrier') {
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.angle || 0);
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      ctx.fillRect(-13, -2, 28, 7);
+      ctx.fillStyle = '#e17055';
+      ctx.fillRect(-14, -4, 28, 8);
+      ctx.fillStyle = '#f5f6fa';
+      for (let s = -12; s < 14; s += 8) ctx.fillRect(s, -4, 4, 8);
+      ctx.restore();
     }
   }
 
@@ -357,6 +369,20 @@ export function createRenderer(canvas) {
       ctx.arc(e.x + Math.cos(e.angle) * 2, e.y + Math.sin(e.angle) * 2 + bob * 0.3, 4.8, e.angle - 1.2, e.angle + 1.2);
       ctx.fill();
     }
+    // Archetype tells: vendor apron, tourist camera, jogger headband.
+    if (e.type === 'vendor') {
+      ctx.fillStyle = '#f5f6fa';
+      ctx.fillRect(e.x - 4, e.y - 1 + bob * 0.3, 8, 6);
+    } else if (e.type === 'tourist') {
+      ctx.fillStyle = '#2d3436';
+      ctx.fillRect(e.x + Math.cos(e.angle) * 8 - 2.5, e.y + Math.sin(e.angle) * 8 - 2 + bob * 0.3, 5, 4);
+    } else if (e.type === 'jogger') {
+      ctx.strokeStyle = '#ffd166';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(e.x + Math.cos(e.angle) * 2, e.y + Math.sin(e.angle) * 2 + bob * 0.3, 4.2, e.angle - 1.4, e.angle + 1.4);
+      ctx.stroke();
+    }
     if (isPlayer) {
       // Weapon in hand
       const wa = e.aimAngle;
@@ -403,6 +429,98 @@ export function createRenderer(canvas) {
     ctx.textAlign = 'center';
     const glyph = { cash: '$', health: '+', armor: 'A', ammo: '≡', pistol: 'P', smg: 'S', scatter: 'X' }[pk.type] || '?';
     ctx.fillText(glyph, pk.x, pk.y + bob + 3);
+  }
+
+  function drawRaceMarkers(game, t) {
+    // Start markers: chequered flags where the three time trials begin.
+    if (!game.race) {
+      for (const race of RACES) {
+        const s = race.start;
+        ctx.fillStyle = '#222';
+        ctx.fillRect(s.x - 10, s.y - 10, 20, 20);
+        ctx.fillStyle = '#f5f6fa';
+        for (let i = 0; i < 4; i++) {
+          for (let j = 0; j < 4; j++) {
+            if ((i + j) % 2 === 0) ctx.fillRect(s.x - 10 + i * 5, s.y - 10 + j * 5, 5, 5);
+          }
+        }
+        ctx.strokeStyle = 'rgba(84,160,255,0.8)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, 20 + Math.sin(t * 3) * 2, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      return;
+    }
+    // Active race: the next checkpoint ring, the rest faint.
+    const race = game.race;
+    race.def.checkpoints.forEach((cp, i) => {
+      if (i < race.cp) return;
+      const next = i === race.cp;
+      const pulse = next ? 1 + Math.sin(t * 5) * 0.1 : 1;
+      ctx.strokeStyle = next ? 'rgba(84,220,255,0.95)' : 'rgba(84,220,255,0.3)';
+      ctx.lineWidth = next ? 4 : 2;
+      ctx.beginPath();
+      ctx.arc(cp.x, cp.y, 34 * pulse, 0, Math.PI * 2);
+      ctx.stroke();
+      if (next) {
+        ctx.fillStyle = 'rgba(84,220,255,0.15)';
+        ctx.beginPath();
+        ctx.arc(cp.x, cp.y, 34 * pulse, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    });
+  }
+
+  function drawHeli(game, t) {
+    const h = game.heli;
+    if (!h) return;
+    // Spotlight pool on the ground (daytime faint; the night pass brightens it).
+    ctx.fillStyle = 'rgba(255,250,200,0.16)';
+    ctx.beginPath();
+    ctx.arc(h.tx, h.ty, 95, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,250,200,0.35)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // Shadow, offset as if the sun is high and west.
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath();
+    ctx.ellipse(h.x + 42, h.y + 52, 30, 13, 0.4, 0, Math.PI * 2);
+    ctx.fill();
+    // Airframe.
+    const ang = Math.atan2(h.vy, h.vx);
+    ctx.save();
+    ctx.translate(h.x, h.y);
+    ctx.rotate(ang);
+    ctx.fillStyle = '#2f3542';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 24, 11, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#57606f';
+    ctx.fillRect(-38, -2.5, 18, 5);
+    ctx.fillStyle = '#a4b0be';
+    ctx.beginPath();
+    ctx.ellipse(8, 0, 10, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#54a0ff';
+    ctx.fillRect(-4, -11, 9, 4);
+    ctx.fillRect(-4, 7, 9, 4);
+    ctx.restore();
+    // Rotor disc + blades.
+    ctx.strokeStyle = 'rgba(40,40,50,0.55)';
+    ctx.lineWidth = 3;
+    for (let i = 0; i < 2; i++) {
+      const a = h.rotor + (i * Math.PI) / 2;
+      ctx.beginPath();
+      ctx.moveTo(h.x - Math.cos(a) * 34, h.y - Math.sin(a) * 34);
+      ctx.lineTo(h.x + Math.cos(a) * 34, h.y + Math.sin(a) * 34);
+      ctx.stroke();
+    }
+    ctx.fillStyle = 'rgba(40,40,50,0.12)';
+    ctx.beginPath();
+    ctx.arc(h.x, h.y, 34, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   function draw(game) {
@@ -521,6 +639,10 @@ export function createRenderer(canvas) {
     drawables.sort((a, b) => a.y - b.y);
     for (const d of drawables) d.fn();
 
+    // Race rings and the police helicopter sit above the street.
+    drawRaceMarkers(game, t);
+    drawHeli(game, t);
+
     // Bullets as tracers.
     ctx.strokeStyle = 'rgba(255,230,150,0.9)';
     ctx.lineWidth = 2;
@@ -579,16 +701,52 @@ export function createRenderer(canvas) {
         const hx = car.x + Math.cos(car.angle) * (car.length / 2 + 26);
         const hy = car.y + Math.sin(car.angle) * (car.length / 2 + 26);
         glow(hx, hy, 90 * cam.zoom, `rgba(255,240,180,${0.16 * nf})`);
+        // Headlight cone thrown ahead of the car.
+        const [fx, fy] = toScreen(car.x + Math.cos(car.angle) * (car.length / 2), car.y + Math.sin(car.angle) * (car.length / 2));
+        const reach = 175 * cam.zoom;
+        const spread = 0.34;
+        const grad = ctx.createLinearGradient(fx, fy, fx + Math.cos(car.angle) * reach, fy + Math.sin(car.angle) * reach);
+        grad.addColorStop(0, `rgba(255,244,190,${0.2 * nf})`);
+        grad.addColorStop(1, 'rgba(255,244,190,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.moveTo(fx, fy);
+        ctx.lineTo(fx + Math.cos(car.angle - spread) * reach, fy + Math.sin(car.angle - spread) * reach);
+        ctx.lineTo(fx + Math.cos(car.angle + spread) * reach, fy + Math.sin(car.angle + spread) * reach);
+        ctx.closePath();
+        ctx.fill();
         if (car.police) {
           const flash = Math.floor(t * 6) % 2 === 0;
           glow(car.x, car.y, 110 * cam.zoom, flash ? `rgba(255,60,60,${0.14 * nf})` : `rgba(60,110,255,${0.14 * nf})`);
         }
+      }
+      // Helicopter spotlight burns through the dark.
+      if (game.heli) {
+        glow(game.heli.tx, game.heli.ty, 130 * cam.zoom, `rgba(255,250,200,${0.3 * nf})`);
       }
       for (const p of game.city.props) {
         if (p.type !== 'lamp') continue;
         glow(p.x, p.y, 52 * cam.zoom, `rgba(255,220,150,${0.1 * nf})`);
       }
       ctx.globalCompositeOperation = 'source-over';
+    }
+
+    // Rain: a grey veil plus slanted streaks over the whole frame.
+    const rain = game.weather ? game.weather.rain : 0;
+    if (rain > 0.02) {
+      ctx.fillStyle = `rgba(70,90,115,${0.14 * rain})`;
+      ctx.fillRect(0, 0, vw, vh);
+      ctx.strokeStyle = `rgba(190,215,240,${0.4 * rain})`;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      const drops = Math.floor(130 * rain);
+      for (let i = 0; i < drops; i++) {
+        const rx = ((i * 137.5 + t * 260) % (vw + 80)) - 40;
+        const ry = ((i * 89.3 + t * 620) % (vh + 60)) - 30;
+        ctx.moveTo(rx, ry);
+        ctx.lineTo(rx - 5, ry + 13);
+      }
+      ctx.stroke();
     }
 
     // Objective edge arrow.
@@ -680,8 +838,14 @@ export function createRenderer(canvas) {
     const places = game.city.places;
     blip(places.diner.x, places.diner.y, '#ffd166', 3.4);
     blip(places.gunShop.x, places.gunShop.y, '#dfe6e9', 3);
+    blip(places.pharmacy.x, places.pharmacy.y, '#58b09c', 3);
     blip(places.respray.x, places.respray.y, '#c56cf0', 3);
+    blip(places.garage.x, places.garage.y, '#ff9f43', 3);
     blip(places.hospital.x, places.hospital.y, '#ff6b81', 3);
+    if (!game.race) {
+      for (const race of RACES) blip(race.start.x, race.start.y, '#54dcff', 3);
+    }
+    if (game.heli) blip(game.heli.x, game.heli.y, '#ffffff', 3.4);
     if (game.objective && !game.objective.noMarker) {
       blip(game.objective.x, game.objective.y, '#ffd166', 4.4);
     }

@@ -183,3 +183,12 @@ html, body {
   color: #ff4757;
   text-shadow: 0 4px 18px rgba(0,0,0,0.6);
 }
+.stats { margin: 10px 0 16px; text-align: left; }
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 2px;
+  font-size: 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.stat-row b { color: #ffd166; }

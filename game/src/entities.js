@@ -1,7 +1,7 @@
 // Entity factories and shared physics: the player, cars, pedestrians, police
 // and pickups, plus the arcade car model and circle-versus-city collision.
 
-import { PLAYER, CAR, PEDS, CAR_MODELS, PED_COLORS } from './config.js';
+import { PLAYER, CAR, PEDS, PED_TYPES, CAR_MODELS, PED_COLORS } from './config.js';
 import { clamp, pushCircleOutOfBox, dist2 } from './rng.js';
 import { WATER_Y } from './city.js';
 
@@ -58,12 +58,28 @@ export function makeCar(x, y, angle, rng, opts = {}) {
 }
 
 export function makePed(x, y, rng, opts = {}) {
+  // Pick an archetype by weight unless the caller names one (cops and
+  // mission gunmen stay plain walkers in uniform colours).
+  let archetype = PED_TYPES[0];
+  if (!opts.cop && !opts.hostile) {
+    let roll = rng.next();
+    for (const t of PED_TYPES) {
+      if (roll < t.weight) { archetype = t; break; }
+      roll -= t.weight;
+    }
+  }
+  const type = opts.type || archetype.type;
   return {
     id: nextId++,
     kind: opts.cop ? 'cop' : 'ped',
+    type,
+    speed: opts.speed || archetype.speed,
+    homeSpot: type === 'vendor' ? { x, y } : null,
+    idleTimer: 0,
+    panicked: false,
     x, y, vx: 0, vy: 0,
     angle: rng.range(0, Math.PI * 2),
-    radius: PEDS.radius,
+    radius: opts.cop || opts.hostile ? PEDS.radius : archetype.radius,
     hp: opts.hp ?? 40,
     color: opts.cop ? '#274472' : rng.pick(PED_COLORS),
     skin: rng.pick(['#f1c27d', '#e0ac69', '#c68642', '#8d5524', '#ffdbac']),
@@ -102,7 +118,7 @@ export function stepCarPhysics(car, input, dt) {
   fwd = clamp(fwd, -CAR.reverseSpeed, maxFwd);
   fwd *= Math.exp(-CAR.drag * dt * (input.throttle === 0 ? 1.6 : 0.5));
 
-  const grip = input.handbrake ? CAR.driftGrip : CAR.grip;
+  const grip = (input.handbrake ? CAR.driftGrip : CAR.grip) * (input.gripMul ?? 1);
   lat *= Math.exp(-grip * dt);
 
   const steerAuthority = clamp(Math.abs(fwd) / 90, 0, 1) * (input.handbrake ? 1.35 : 1);

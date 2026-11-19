@@ -17,6 +17,15 @@ export function saveGame(game) {
       y: game.player.y,
       clock: game.clock,
       jobsDone: game.stats.jobsDone,
+      stats: {
+        carsStolen: game.stats.carsStolen,
+        busted: game.stats.busted,
+        deaths: game.stats.deaths,
+        racesWon: game.stats.racesWon,
+        topSpeed: game.stats.topSpeed,
+        moneyEarned: game.stats.moneyEarned,
+        raceBest: game.stats.raceBest,
+      },
       savedAt: Date.now(),
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(data));

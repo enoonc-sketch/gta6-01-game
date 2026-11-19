@@ -91,10 +91,31 @@ export const PRICES = {
   scatter: 650,
   ammoBox: 60,
   armor: 300,
+  healthPack: 40,
+  repairPerHp: 1.1,
   respray: 150,
   hospitalFee: 120,
   bailFee: 200,
 };
+
+// Periodic rain: phases alternate between clear and raining.
+export const WEATHER = {
+  clearMin: 100,
+  clearMax: 200,
+  rainMin: 55,
+  rainMax: 115,
+  gripLoss: 0.45,   // fraction of tyre grip lost at full rain
+  pedHurry: 1.35,   // pedestrians walk this much faster in the rain
+};
+
+// Pedestrian archetypes: [type, weight, speed, body radius].
+export const PED_TYPES = [
+  { type: 'walker', weight: 0.52, speed: 52, radius: 9 },
+  { type: 'jogger', weight: 0.15, speed: 108, radius: 8.6 },
+  { type: 'elder', weight: 0.12, speed: 33, radius: 8 },
+  { type: 'vendor', weight: 0.11, speed: 30, radius: 9.4 },
+  { type: 'tourist', weight: 0.1, speed: 46, radius: 9 },
+];
 
 export const PALETTE = {
   grass: '#7fae56',
@@ -137,7 +158,8 @@ export const PED_COLORS = ['#e74c3c', '#3498db', '#f39c12', '#2ecc71', '#9b59b6'
 export const BUILDING_COLORS = ['#d9c7a7', '#c9b8a3', '#b7c4ce', '#e0b8a0', '#a8b8a0', '#cfd4d8', '#e5d3b3', '#bfa48f', '#9fb4c0', '#d8b4b4'];
 
 export const SHOP_NAMES = [
-  'Salt & Smoke Diner', 'Cinder Arms', "Milo's Respray", 'Bayview Pharmacy', 'Noodle Nook',
-  'Tidewater Grocers', 'The Gilded Palm Hotel', 'Harbor Customs', 'Sunset Records', 'Laundromat Luxe',
+  'Salt & Smoke Diner', 'Cinder Arms', "Milo's Respray", 'Noodle Nook',
+  'Tidewater Grocers', 'The Gilded Palm Hotel', 'Sunset Records', 'Laundromat Luxe',
   'Cinder Bay Bank', 'Marina Chandlery', 'Palm Court Café', 'Dockside Fitness', 'Old Tomas Pawn',
+  'Anchor Books', 'Velvet Salon',
 ];

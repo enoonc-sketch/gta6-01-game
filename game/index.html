@@ -41,7 +41,7 @@
   <div class="panel title-panel">
     <h1 class="game-title">CINDER BAY</h1>
     <p class="tagline">Rhea Calloway is back in town — and in debt to Old Tomas.<br>
-    Drive, steal, run and shoot your way through six jobs in a sun-soaked port city.</p>
+    Drive, steal, run and shoot your way through ten jobs in a sun-soaked port city.</p>
     <button id="btn-new" class="btn primary">New Game</button>
     <button id="btn-continue" class="btn">Continue</button>
     <button id="btn-help" class="btn">How to Play</button>
@@ -64,8 +64,12 @@
       <tr><td>Esc / P</td><td>Pause</td></tr>
     </table>
     <p>Follow the gold marker for jobs. Crimes raise your wanted stars — break line of
-    sight to cool down, or pay Milo to respray the car. Courier jobs wait at blue phone
-    booths, and 20 lucky shells hide around the bay.</p>
+    sight to cool down, or pay Milo to respray the car. At four stars the law throws
+    up roadblocks; at five, a helicopter keeps its spotlight on you. Side jobs wait
+    at blue phone booths (parcels, taxi fares, getaway runs, repo work), three
+    checkpoint races start at chequered flags, Harbor Customs repairs cars, Bayview
+    Pharmacy sells health and supplies, and 20 lucky shells hide around the bay.
+    Watch the sky — rain makes the roads slick.</p>
     <button id="btn-help-back" class="btn primary">Back</button>
   </div>
 </div>
@@ -73,6 +77,7 @@
 <div id="pause-screen" class="screen hidden">
   <div class="panel">
     <h2>Paused</h2>
+    <div id="pause-stats" class="stats"></div>
     <button id="btn-resume" class="btn primary">Resume</button>
     <button id="btn-save" class="btn">Save Game</button>
     <button id="btn-quit-title" class="btn">Save &amp; Title Screen</button>
@@ -83,6 +88,7 @@
   <div class="panel end-panel">
     <h1 id="end-title">WASTED</h1>
     <p id="end-line"></p>
+    <div id="end-stats" class="stats"></div>
     <button id="btn-respawn" class="btn primary">Continue</button>
   </div>
 </div>
@@ -97,6 +103,17 @@
     <button id="buy-ammo" class="btn">Ammo crate — $60</button>
     <button id="buy-armor" class="btn">Body armor — $300</button>
     <button id="btn-shop-close" class="btn primary">Leave</button>
+  </div>
+</div>
+
+<div id="pharmacy-menu" class="screen hidden">
+  <div class="panel">
+    <h2>Bayview Pharmacy</h2>
+    <p>Cash: <span id="pharmacy-cash">$0</span></p>
+    <button id="buy-health" class="btn">Health pack — $40</button>
+    <button id="buy-ammo2" class="btn">Ammo crate — $60</button>
+    <button id="buy-armor2" class="btn">Body armor — $300</button>
+    <button id="btn-pharmacy-close" class="btn primary">Leave</button>
   </div>
 </div>
 
